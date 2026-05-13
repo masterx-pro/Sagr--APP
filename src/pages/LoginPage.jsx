@@ -35,7 +35,7 @@ export default function LoginPage({ onLogin }) {
     <div className="min-h-screen flex flex-col items-center justify-center p-6">
       <div className="text-center mb-8">
         <h1 className="text-4xl font-extrabold tracking-tight">
-          Festa Manager
+          SagràApp
         </h1>
         <p className="opacity-70 mt-2">Inserisci il tuo PIN</p>
       </div>

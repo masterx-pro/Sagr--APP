@@ -9,8 +9,8 @@ export default defineConfig({
       registerType: 'autoUpdate',
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {
-        name: 'Festa Manager',
-        short_name: 'Festa',
+        name: 'SagràApp',
+        short_name: 'SagràApp',
         description: 'Gestione ordini festa di paese',
         theme_color: '#1a1a2e',
         background_color: '#1a1a2e',
