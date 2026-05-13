@@ -4,7 +4,7 @@ import { useOrders } from '../hooks/useOrders.js'
 import OrderCard from '../components/OrderCard.jsx'
 
 /**
- * AdminPage: 3 tab → Ordini, Menu, Riepilogo.
+ * AdminPage: 4 tab → Ordini, Menu, Riepilogo, Staff.
  */
 export default function AdminPage({ user, onLogout }) {
   const [tab, setTab] = useState('ordini')
@@ -24,16 +24,18 @@ export default function AdminPage({ user, onLogout }) {
         </button>
       </header>
 
-      <nav className="grid grid-cols-3 gap-1 p-2 bg-pannello border-b border-bordo">
+      <nav className="grid grid-cols-4 gap-1 p-2 bg-pannello border-b border-bordo">
         <TabBtn active={tab === 'ordini'}    onClick={() => setTab('ordini')}>Ordini</TabBtn>
         <TabBtn active={tab === 'menu'}      onClick={() => setTab('menu')}>Menu</TabBtn>
         <TabBtn active={tab === 'riepilogo'} onClick={() => setTab('riepilogo')}>Riepilogo</TabBtn>
+        <TabBtn active={tab === 'staff'}     onClick={() => setTab('staff')}>Staff</TabBtn>
       </nav>
 
       <main className="flex-1 p-4">
         {tab === 'ordini'    && <TabOrdini />}
         {tab === 'menu'      && <TabMenu />}
         {tab === 'riepilogo' && <TabRiepilogo />}
+        {tab === 'staff'     && <TabStaff />}
       </main>
     </div>
   )
@@ -488,5 +490,208 @@ function StatCard({ label, value }) {
       <p className="text-xs opacity-70">{label}</p>
       <p className="text-2xl font-extrabold">{value}</p>
     </div>
+  )
+}
+
+// -------------------- TAB STAFF --------------------
+
+const RUOLI = ['cameriere', 'bar', 'cucina', 'admin']
+
+const PIN_LEN = (ruolo) => (ruolo === 'admin' ? 6 : 4)
+
+const RUOLO_BG = {
+  cameriere: 'bg-cameriere',
+  bar:       'bg-bar',
+  cucina:    'bg-cucina',
+  admin:     'bg-admin',
+}
+
+function TabStaff() {
+  const [users, setUsers] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [reveal, setReveal] = useState({}) // { [id]: boolean }
+
+  const load = async () => {
+    setLoading(true)
+    const { data, error } = await supabase
+      .from('users')
+      .select('id, nome, ruolo, pin')
+      .order('ruolo')
+      .order('nome')
+    if (error) alert('Errore caricamento utenti: ' + error.message)
+    setUsers(data || [])
+    setLoading(false)
+  }
+  useEffect(() => { load() }, [])
+
+  const toggleReveal = (id) =>
+    setReveal(r => ({ ...r, [id]: !r[id] }))
+
+  const eliminaUtente = async (u) => {
+    if (!confirm(`Sei sicuro di voler eliminare "${u.nome}"?`)) return
+    const { error } = await supabase.from('users').delete().eq('id', u.id)
+    if (error) { alert('Errore: ' + error.message); return }
+    load()
+  }
+
+  return (
+    <div className="space-y-6 pb-6">
+      <div className="flex items-center justify-between">
+        <span className="text-sm opacity-70">Gestione staff</span>
+        <button
+          type="button"
+          onClick={load}
+          disabled={loading}
+          aria-label="Ricarica utenti"
+          title="Ricarica utenti"
+          className={`w-9 h-9 rounded-lg bg-pannello border border-bordo text-base
+                      flex items-center justify-center
+                      active:scale-95 transition-transform
+                      disabled:opacity-50 ${loading ? 'animate-spin' : ''}`}
+        >
+          🔄
+        </button>
+      </div>
+
+      <FormAggiungiUtente users={users} onAdded={load} />
+
+      <div>
+        <h3 className="font-bold mb-2">Utenti ({users.length})</h3>
+        {users.length === 0 && (
+          <p className="opacity-60 text-sm">Nessun utente</p>
+        )}
+        <ul className="space-y-2">
+          {users.map(u => {
+            const visible = !!reveal[u.id]
+            const bg = RUOLO_BG[u.ruolo] || 'bg-pannello'
+            return (
+              <li key={u.id} className="card flex items-center gap-2">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2 mb-1">
+                    <p className="font-semibold truncate">{u.nome}</p>
+                    <span className={`badge ${bg} text-white text-xs px-2 py-0.5 rounded-full uppercase tracking-wide`}>
+                      {u.ruolo}
+                    </span>
+                  </div>
+                  <p className="text-sm opacity-80 font-mono">
+                    PIN: {visible ? u.pin : '•'.repeat(String(u.pin || '').length || PIN_LEN(u.ruolo))}
+                  </p>
+                </div>
+                <button
+                  onClick={() => toggleReveal(u.id)}
+                  aria-label={visible ? 'Nascondi PIN' : 'Mostra PIN'}
+                  title={visible ? 'Nascondi PIN' : 'Mostra PIN'}
+                  className="px-3 py-2 rounded-xl text-sm font-semibold bg-pannello border border-bordo"
+                >
+                  {visible ? '🙈' : '👁'}
+                </button>
+                <button
+                  onClick={() => eliminaUtente(u)}
+                  className="px-3 py-2 rounded-xl text-sm font-semibold bg-red-700"
+                >
+                  Elimina
+                </button>
+              </li>
+            )
+          })}
+        </ul>
+      </div>
+    </div>
+  )
+}
+
+function FormAggiungiUtente({ users, onAdded }) {
+  const [nome, setNome] = useState('')
+  const [pin, setPin] = useState('')
+  const [ruolo, setRuolo] = useState('cameriere')
+  const [saving, setSaving] = useState(false)
+  const [error, setError] = useState(null)
+
+  const lenAttesa = PIN_LEN(ruolo)
+
+  const submit = async (e) => {
+    e.preventDefault()
+    setError(null)
+
+    const nomeTrim = nome.trim()
+    if (!nomeTrim) {
+      setError('Nome obbligatorio')
+      return
+    }
+    if (!/^\d+$/.test(pin)) {
+      setError('Il PIN deve contenere solo cifre')
+      return
+    }
+    if (pin.length !== lenAttesa) {
+      setError(`Il PIN per "${ruolo}" deve essere di ${lenAttesa} cifre`)
+      return
+    }
+    if (users.some(u => String(u.pin) === pin)) {
+      setError('PIN già in uso')
+      return
+    }
+
+    setSaving(true)
+    const { error: insErr } = await supabase
+      .from('users')
+      .insert({ nome: nomeTrim, pin, ruolo })
+    setSaving(false)
+
+    if (insErr) {
+      // unique violation lato DB (fallback se due insert in concorrenza)
+      if (insErr.code === '23505') {
+        setError('PIN già in uso')
+      } else {
+        setError(insErr.message)
+      }
+      return
+    }
+    setNome('')
+    setPin('')
+    setRuolo('cameriere')
+    onAdded()
+  }
+
+  return (
+    <form onSubmit={submit} className="card space-y-2">
+      <h3 className="font-bold">Aggiungi utente</h3>
+      <input
+        className="input-base"
+        placeholder="Nome (es. Mario)"
+        value={nome}
+        onChange={e => setNome(e.target.value)}
+      />
+      <input
+        className="input-base"
+        placeholder={`PIN (${lenAttesa} cifre)`}
+        inputMode="numeric"
+        maxLength={lenAttesa}
+        value={pin}
+        onChange={e => setPin(e.target.value.replace(/\D/g, '').slice(0, lenAttesa))}
+      />
+      <label className="block">
+        <span className="text-xs opacity-80">Ruolo</span>
+        <select
+          className="input-base mt-1"
+          value={ruolo}
+          onChange={e => {
+            setRuolo(e.target.value)
+            setPin(p => p.slice(0, PIN_LEN(e.target.value)))
+          }}
+        >
+          {RUOLI.map(r => (
+            <option key={r} value={r}>{r}</option>
+          ))}
+        </select>
+      </label>
+      {error && (
+        <p className="text-sm bg-red-900/40 border border-red-700 rounded-xl px-2 py-1">
+          {error}
+        </p>
+      )}
+      <button type="submit" disabled={saving} className="btn-success w-full">
+        {saving ? 'Salvataggio…' : 'Aggiungi'}
+      </button>
+    </form>
   )
 }
