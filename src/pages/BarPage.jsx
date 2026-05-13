@@ -1,0 +1,17 @@
+import StationPage from './StationPage.jsx'
+
+/**
+ * BarPage: pagina della postazione bar.
+ * Mostra in realtime gli item con categoria='bar' non ancora pronti.
+ */
+export default function BarPage({ user, onLogout }) {
+  return (
+    <StationPage
+      user={user}
+      onLogout={onLogout}
+      categoria="bar"
+      titolo="Bar"
+      coloreHeader="bg-bar"
+    />
+  )
+}
