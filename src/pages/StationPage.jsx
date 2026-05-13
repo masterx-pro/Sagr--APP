@@ -51,10 +51,11 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className={`${coloreHeader} px-4 py-3 flex items-center justify-between`}>
-        <div>
-          <h1 className="font-bold text-lg">{titolo}</h1>
-          <p className="text-xs opacity-90">{user.nome}</p>
+      <header className={`${coloreHeader} px-4 py-3 flex items-center justify-between
+                          sticky top-0 z-20 mobile-landscape:py-2`}>
+        <div className="min-w-0">
+          <h1 className="font-bold text-lg mobile-landscape:text-base">{titolo}</h1>
+          <p className="text-xs opacity-90 truncate">{user.nome}</p>
         </div>
         <button
           onClick={onLogout}
@@ -64,13 +65,15 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
         </button>
       </header>
 
-      <main className="flex-1 p-4">
+      <main className="flex-1 p-4 mobile-landscape:p-3">
         {pending.length === 0 ? (
-          <p className="text-center text-2xl opacity-60 py-16">
+          <p className="text-center text-2xl opacity-60 py-16
+                        mobile-landscape:py-6 mobile-landscape:text-xl">
             Tutto pronto 🎉
           </p>
         ) : (
-          <ul className="space-y-3">
+          <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
+                         mobile-landscape:grid-cols-2 gap-3">
             {pending.map(({ order, items }) => (
               <StationCard
                 key={order.id}

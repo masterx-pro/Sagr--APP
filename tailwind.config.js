@@ -18,6 +18,9 @@ export default {
       },
       minHeight: {
         'btn': '48px'
+      },
+      screens: {
+        'mobile-landscape': { 'raw': '(orientation: landscape) and (max-height: 500px)' }
       }
     }
   },

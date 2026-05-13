@@ -11,10 +11,11 @@ export default function AdminPage({ user, onLogout }) {
 
   return (
     <div className="min-h-screen flex flex-col">
-      <header className="bg-admin px-4 py-3 flex items-center justify-between">
-        <div>
-          <h1 className="font-bold text-lg">Admin</h1>
-          <p className="text-xs opacity-90">{user.nome}</p>
+      <header className="bg-admin px-4 py-3 flex items-center justify-between
+                         sticky top-0 z-30 mobile-landscape:py-2">
+        <div className="min-w-0">
+          <h1 className="font-bold text-lg mobile-landscape:text-base">Admin</h1>
+          <p className="text-xs opacity-90 truncate mobile-landscape:hidden">{user.nome}</p>
         </div>
         <button
           onClick={onLogout}
@@ -24,14 +25,16 @@ export default function AdminPage({ user, onLogout }) {
         </button>
       </header>
 
-      <nav className="grid grid-cols-4 gap-1 p-2 bg-pannello border-b border-bordo">
+      <nav className="grid grid-cols-4 gap-1 p-2 bg-pannello border-b border-bordo
+                      sticky top-[3.25rem] z-20 mobile-landscape:top-[2.5rem]
+                      mobile-landscape:p-1">
         <TabBtn active={tab === 'ordini'}    onClick={() => setTab('ordini')}>Ordini</TabBtn>
         <TabBtn active={tab === 'menu'}      onClick={() => setTab('menu')}>Menu</TabBtn>
         <TabBtn active={tab === 'riepilogo'} onClick={() => setTab('riepilogo')}>Riepilogo</TabBtn>
         <TabBtn active={tab === 'staff'}     onClick={() => setTab('staff')}>Staff</TabBtn>
       </nav>
 
-      <main className="flex-1 p-4">
+      <main className="flex-1 p-4 mobile-landscape:p-3">
         {tab === 'ordini'    && <TabOrdini />}
         {tab === 'menu'      && <TabMenu />}
         {tab === 'riepilogo' && <TabRiepilogo />}
@@ -45,7 +48,9 @@ function TabBtn({ active, onClick, children }) {
   return (
     <button
       onClick={onClick}
-      className={`min-h-btn rounded-xl font-semibold ${
+      className={`min-h-btn rounded-xl font-semibold text-sm sm:text-base
+                  mobile-landscape:min-h-[36px] mobile-landscape:rounded-lg
+                  mobile-landscape:text-xs ${
         active ? 'bg-admin text-white' : 'bg-sfondo border border-bordo'
       }`}
     >

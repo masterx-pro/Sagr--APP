@@ -113,12 +113,13 @@ export default function CamerierePage({ user, onLogout }) {
 
 function Header({ color, nome, ruolo, onLogout, leftAction }) {
   return (
-    <header className={`${color} px-4 py-3 flex items-center justify-between gap-2`}>
+    <header className={`${color} px-4 py-3 flex items-center justify-between gap-2
+                        sticky top-0 z-30 mobile-landscape:py-2`}>
       <div className="flex items-center gap-2 min-w-0">
         {leftAction}
         <div className="min-w-0">
           <p className="font-bold truncate">{nome}</p>
-          <p className="text-xs opacity-90">{ruolo}</p>
+          <p className="text-xs opacity-90 mobile-landscape:hidden">{ruolo}</p>
         </div>
       </div>
       <button
@@ -144,14 +145,17 @@ function ListaTavoli({ orders, onNew, onSelect }) {
         <p className="text-center opacity-60 py-8">Nessun tavolo aperto</p>
       )}
 
-      {orders.map(o => (
-        <OrderCard
-          key={o.id}
-          order={o}
-          items={o.order_items || []}
-          onClick={() => onSelect(o.id)}
-        />
-      ))}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
+                      mobile-landscape:grid-cols-2 gap-3">
+        {orders.map(o => (
+          <OrderCard
+            key={o.id}
+            order={o}
+            items={o.order_items || []}
+            onClick={() => onSelect(o.id)}
+          />
+        ))}
+      </div>
     </div>
   )
 }
@@ -198,7 +202,7 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
   }
 
   return (
-    <div className="pb-32">
+    <div className="pb-32 mobile-landscape:pb-24">
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm opacity-70">Nuovo ordine</span>
         <button
@@ -254,7 +258,8 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
 
       <MenuSelector items={menu} quantities={qty} onChange={setQty} />
 
-      <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo p-3 z-20">
+      <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo
+                      p-3 mobile-landscape:p-2 z-20">
         <div className="flex items-center justify-between mb-2">
           <span className="text-sm opacity-80">
             {itemsArr.reduce((s, it) => s + it.quantita, 0)} pezzi
@@ -324,10 +329,11 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onPaid }) {
     )
 
     return (
-      <div className="pb-32">
+      <div className="pb-32 mobile-landscape:pb-24">
         <p className="mb-3 font-semibold">Aggiungi al tavolo {order.numero_tavolo}</p>
         <MenuSelector items={menu} quantities={qty} onChange={setQty} />
-        <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo p-3 z-20">
+        <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo
+                      p-3 mobile-landscape:p-2 z-20">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm opacity-80">
               {itemsArr.reduce((s, it) => s + it.quantita, 0)} pezzi

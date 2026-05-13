@@ -31,15 +31,27 @@ export default function LoginPage({ onLogin }) {
     onLogin(data)
   }
 
+  const Header = (
+    <>
+      <h1 className="text-4xl font-extrabold tracking-tight
+                     mobile-landscape:text-2xl">
+        SagràApp
+      </h1>
+      <p className="opacity-70 mt-2 mobile-landscape:mt-1 mobile-landscape:text-sm">
+        Inserisci il tuo PIN
+      </p>
+    </>
+  )
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center p-6">
-      <div className="text-center mb-8">
-        <h1 className="text-4xl font-extrabold tracking-tight">
-          SagràApp
-        </h1>
-        <p className="opacity-70 mt-2">Inserisci il tuo PIN</p>
-      </div>
-      <PinPad onSubmit={handleSubmit} loading={loading} error={error} />
+    <div className="min-h-screen flex flex-col items-center justify-center
+                    p-6 mobile-landscape:p-3">
+      <PinPad
+        onSubmit={handleSubmit}
+        loading={loading}
+        error={error}
+        header={Header}
+      />
     </div>
   )
 }
