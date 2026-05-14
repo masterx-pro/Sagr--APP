@@ -11,3 +11,9 @@ dist-ssr
 .idea
 
 .vercel
+
+# Playwright artifacts
+tests/screenshots/
+test-results/
+playwright-report/
+playwright/.cache/
