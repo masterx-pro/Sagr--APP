@@ -291,22 +291,22 @@ function ListaMenu({ titolo, colore, items, onToggle, editingId, onEdit, onSave,
           onCancel={() => onEdit(null)}
         />
       ) : (
-        <div className="flex items-center gap-2">
+        <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
-            <p className={`font-semibold truncate ${i.attivo ? '' : 'line-through opacity-50'}`}>
+            <p className={`font-semibold break-words whitespace-normal ${i.attivo ? '' : 'line-through opacity-50'}`}>
               {i.nome}
             </p>
             <p className="text-sm opacity-80">€ {Number(i.prezzo).toFixed(2)}</p>
           </div>
           <button
             onClick={() => onEdit(i.id)}
-            className="px-3 py-2 rounded-xl text-sm font-semibold bg-pannello border border-bordo"
+            className="px-3 py-2 rounded-xl text-sm font-semibold bg-pannello border border-bordo shrink-0"
           >
             Modifica
           </button>
           <button
             onClick={() => onToggle(i)}
-            className={`px-3 py-2 rounded-xl text-sm font-semibold ${
+            className={`px-3 py-2 rounded-xl text-sm font-semibold shrink-0 ${
               i.attivo ? 'bg-green-700' : 'bg-gray-600'
             }`}
           >

@@ -105,14 +105,14 @@ export default function MenuSelector({ items, quantities, onChange }) {
 function renderItemRow(item, quantities, setQty) {
   const q = quantities[item.id] || 0
   return (
-    <li key={item.id} className="card flex items-center gap-3">
+    <li key={item.id} className="card flex items-start gap-3">
       <div className="flex-1 min-w-0">
-        <p className="font-semibold truncate">{item.nome}</p>
+        <p className="font-semibold break-words whitespace-normal">{item.nome}</p>
         <p className="text-sm opacity-80">
           € {Number(item.prezzo).toFixed(2)}
         </p>
       </div>
-      <div className="flex items-center gap-2">
+      <div className="flex items-center gap-2 shrink-0">
         <button
           onClick={() => setQty(item.id, -1)}
           disabled={q === 0}
