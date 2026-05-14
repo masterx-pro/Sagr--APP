@@ -52,6 +52,18 @@ export default function LoginPage({ onLogin }) {
         error={error}
         header={Header}
       />
+
+      <div className="mt-8 text-center text-xs opacity-40 leading-relaxed">
+        <p>Sviluppato da Mattia Prosperi</p>
+        <p>
+          <a
+            href="mailto:masterxpro@gmail.com"
+            className="hover:opacity-100 hover:underline"
+          >
+            masterxpro@gmail.com
+          </a>
+        </p>
+      </div>
     </div>
   )
 }
