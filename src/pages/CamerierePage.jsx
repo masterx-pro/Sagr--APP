@@ -51,6 +51,52 @@ export default function CamerierePage({ user, onLogout }) {
     return () => { supabase.removeChannel(channel) }
   }, [fetchOpenOrders])
 
+  // Blocca refresh/chiusura tab durante la compilazione di un nuovo ordine
+  useEffect(() => {
+    if (view !== 'new') return
+    const onBeforeUnload = (e) => {
+      e.preventDefault()
+      e.returnValue = 'Hai un ordine in corso. Sei sicuro di voler uscire?'
+      return 'Hai un ordine in corso. Sei sicuro di voler uscire?'
+    }
+    window.addEventListener('beforeunload', onBeforeUnload)
+    return () => window.removeEventListener('beforeunload', onBeforeUnload)
+  }, [view])
+
+  // Tasto INDIETRO del telefono mentre si compila un nuovo ordine
+  useEffect(() => {
+    if (view !== 'new') return
+    window.history.pushState(null, '', window.location.href)
+    const onPop = () => {
+      const ok = window.confirm(
+        'Hai un ordine in corso. Vuoi annullare e tornare indietro?'
+      )
+      if (ok) {
+        setView('list')
+      } else {
+        window.history.pushState(null, '', window.location.href)
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [view])
+
+  // Tasto INDIETRO del telefono dalla lista tavoli principale: chiede prima di uscire
+  useEffect(() => {
+    if (view !== 'list') return
+    window.history.pushState(null, '', window.location.href)
+    const onPop = () => {
+      const ok = window.confirm("Vuoi uscire dall'app?")
+      if (ok) {
+        window.history.back()
+      } else {
+        window.history.pushState(null, '', window.location.href)
+      }
+    }
+    window.addEventListener('popstate', onPop)
+    return () => window.removeEventListener('popstate', onPop)
+  }, [view])
+
   return (
     <div className="min-h-screen flex flex-col">
       <Header
