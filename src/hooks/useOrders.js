@@ -134,6 +134,18 @@ export function useOrders({ autoload = false } = {}) {
     if (e2) throw e2
   }, [])
 
+  // Marca pronti tutti gli order_items con uno specifico nome_item nella categoria,
+  // per tutti gli ordini non pagati. Usato dalla vista aggregata di cucina/bar.
+  const markPietanzaReady = useCallback(async (categoria, nomeItem) => {
+    const { error } = await supabase
+      .from('order_items')
+      .update({ pronto: true })
+      .eq('categoria', categoria)
+      .eq('nome_item', nomeItem)
+      .eq('pronto', false)
+    if (error) throw error
+  }, [])
+
   const markItemsReady = useCallback(async (orderItemIds) => {
     if (!orderItemIds || orderItemIds.length === 0) return
     const { error } = await supabase
@@ -206,6 +218,7 @@ export function useOrders({ autoload = false } = {}) {
     createOrder,
     addItemsToOrder,
     markItemsReady,
+    markPietanzaReady,
     markTableCategoryReady,
     markOrderPaid,
     deleteOrder,
