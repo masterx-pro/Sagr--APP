@@ -1,24 +1,23 @@
 import { useMemo, useState } from 'react'
-import { getMandataPerItem, isBarMandata4 } from '../utils/servizio.js'
 
 /**
- * MenuSelector v3:
- *   - 4 tabs mandata: M1 (antipasti) / M2 (primi) / M3 (secondi+contorni) / M4 (dolci+caffe+amari)
- *   - La mandata di un item e' SEMPRE derivata dalla sottocategoria
- *     (autoritativo via getMandataPerItem). L'utente non assegna la mandata,
- *     i tab servono solo da filtro/visualizzazione.
- *   - Nel tab mandata corrente: items della mandata interattivi (+/-)
- *   - Items gia' selezionati nelle mandate precedenti: visibili in grigio,
- *     +/- disabilitati, badge "M{n}" del loro effettivo numero.
- *   - Items M4 in modalita' "M4 bloccata": badge 🔒, +/- disabilitati.
+ * MenuSelector v5: mandate libere.
+ *
+ * Modello dati `quantities`:
+ *   { [itemId]: { 1: q1, 2: q2, 3: q3, 4: q4 } }
+ * Ogni piatto puo' essere ordinato in piu' mandate contemporaneamente.
+ *
+ * Tab M1/M2/M3/M4: cambiano solo la VISTA. Nessun blocco.
+ *   - In tab Mx la quantita' mostrata e' qty[itemId][x] (default 0)
+ *   - I piatti con qty > 0 in mandate diverse da quella attiva appaiono
+ *     con sfondo grigio (promemoria visivo). +/- sempre attivi.
  *
  * Props:
- *   - items: lista menu_items
- *   - quantities: { [itemId]: { quantita, mandata } }
- *   - onChange(newQuantities)
- *   - mandateAbilitate: array di numeri di mandata abilitati al click.
- *       default [1,2,3,4]. Per "nuovo ordine" pass [1,2,3].
- *       Per "Sblocca M4 → aggiungi" pass [4] (mostra solo M4 abilitata).
+ *   - items, quantities, onChange
+ *   - mandateAbilitate: array di tab da MOSTRARE (default [1,2,3,4])
+ *     In modalita' "aggiungi M4" si puo' passare [4] per restringere.
+ *   - footer: contenuto opzionale renderizzato in fondo alla lista
+ *     (es. pulsante "Avanti → Pagamento" inline).
  */
 
 const PORTATE_CUCINA = [
@@ -48,13 +47,37 @@ function groupByPortata(items, schema) {
   return groups.filter(g => g.items.length > 0)
 }
 
+function qtyOf(quantities, itemId, mandata) {
+  return Number(quantities?.[itemId]?.[mandata]) || 0
+}
+function totalQtyOf(quantities, itemId) {
+  const m = quantities?.[itemId]
+  if (!m) return 0
+  return (m[1] || 0) + (m[2] || 0) + (m[3] || 0) + (m[4] || 0)
+}
+
+// Trasforma { itemId: {1:n,2:n,3:n,4:n} } in array di righe
+// [{ itemId, mandata, quantita }] - solo quelle > 0.
+export function flattenQuantities(quantities) {
+  const out = []
+  for (const [itemId, perMandata] of Object.entries(quantities || {})) {
+    for (const [mandata, q] of Object.entries(perMandata || {})) {
+      const qN = Number(q)
+      if (qN > 0) {
+        out.push({ itemId, mandata: parseInt(mandata, 10), quantita: qN })
+      }
+    }
+  }
+  return out
+}
+
 export default function MenuSelector({
   items,
   quantities,
   onChange,
   mandateAbilitate = [1, 2, 3, 4],
+  footer = null,
 }) {
-  // Sceglie la prima mandata abilitata come tab di default
   const [mandataAttiva, setMandataAttiva] = useState(mandateAbilitate[0] ?? 1)
   const [tab, setTab] = useState('cucina')
 
@@ -63,8 +86,6 @@ export default function MenuSelector({
     [items]
   )
 
-  // Items della categoria corrente, ordinati. Mostro TUTTI (la mandata di
-  // appartenenza la calcolo per ogni item, e marco grigi i fuori-tab).
   const itemsCategoria = useMemo(
     () => itemsAttivi
       .filter(i => i.categoria === tab)
@@ -77,24 +98,26 @@ export default function MenuSelector({
     [tab, itemsCategoria]
   )
 
-  // Conteggio pezzi gia' selezionati per mandata (per badge sul tab)
+  // Conteggio pezzi PER MANDATA (tutte le mandate, tutte le categorie)
   const contoPerMandata = useMemo(() => {
     const tot = { 1: 0, 2: 0, 3: 0, 4: 0 }
-    for (const v of Object.values(quantities || {})) {
-      if (v && tot[v.mandata] != null) tot[v.mandata] += v.quantita
+    for (const perMandata of Object.values(quantities || {})) {
+      for (const m of [1, 2, 3, 4]) {
+        tot[m] += Number(perMandata?.[m] || 0)
+      }
     }
     return tot
   }, [quantities])
 
   const setQty = (item, delta) => {
-    const cur = quantities[item.id]
-    const curQ = cur?.quantita || 0
-    const next = Math.max(0, curQ + delta)
-    // La mandata e' AUTORITATIVAMENTE derivata dall'item
-    const mandata = getMandataPerItem(item)
+    const cur = qtyOf(quantities, item.id, mandataAttiva)
+    const next = Math.max(0, cur + delta)
     const updated = { ...quantities }
-    if (next === 0) delete updated[item.id]
-    else updated[item.id] = { quantita: next, mandata }
+    const perMandataExisting = updated[item.id] ? { ...updated[item.id] } : {}
+    if (next === 0) delete perMandataExisting[mandataAttiva]
+    else perMandataExisting[mandataAttiva] = next
+    if (Object.keys(perMandataExisting).length === 0) delete updated[item.id]
+    else updated[item.id] = perMandataExisting
     onChange(updated)
   }
 
@@ -105,18 +128,17 @@ export default function MenuSelector({
         {[1, 2, 3, 4].map(n => {
           const active = mandataAttiva === n
           const count = contoPerMandata[n]
-          const disabled = !mandateAbilitate.includes(n)
+          const hidden = !mandateAbilitate.includes(n)
+          if (hidden) return null
           return (
             <button
               key={n}
               type="button"
-              onClick={() => !disabled && setMandataAttiva(n)}
-              disabled={disabled}
+              onClick={() => setMandataAttiva(n)}
               className={`flex-1 min-h-btn rounded-xl font-bold text-sm relative
-                          ${active ? 'bg-cameriere text-white' : 'bg-pannello border border-bordo'}
-                          ${disabled ? 'opacity-40 cursor-not-allowed' : ''}`}
+                          ${active ? 'bg-cameriere text-white' : 'bg-pannello border border-bordo'}`}
             >
-              {n === 4 && disabled ? '🔒 ' : ''}M{n}
+              M{n}
               {count > 0 && (
                 <span className="ml-1 text-xs font-normal opacity-90">· {count}</span>
               )}
@@ -166,59 +188,44 @@ export default function MenuSelector({
             quantities,
             setQty,
             mandataAttiva,
-            mandateAbilitate,
           })),
         ])}
       </ul>
+
+      {/* Footer inline (pulsante pagamento o azione) */}
+      {footer && (
+        <div className="mt-6">
+          {footer}
+        </div>
+      )}
     </div>
   )
 }
 
-function renderItemRow({ item, quantities, setQty, mandataAttiva, mandateAbilitate }) {
-  const cur = quantities[item.id]
-  const q = cur?.quantita || 0
-  const mandataItem = getMandataPerItem(item)
-  const isM4Forzata = item.categoria === 'cucina'
-    ? mandataItem === 4
-    : isBarMandata4(item)
-
-  // L'item e' interattivo se:
-  //   - la sua mandata e' abilitata (es. M4 disabilitata in "nuovo ordine")
-  //   - la sua mandata coincide col tab corrente
-  const mandataAbilitataPerItem = mandateAbilitate.includes(mandataItem)
-  const inTabCorrente = mandataItem === mandataAttiva
-  const interattivo = mandataAbilitataPerItem && inTabCorrente
-  const inMandataPrecedente = mandataItem < mandataAttiva && q > 0
-  const inMandataFutura = mandataItem > mandataAttiva && q > 0
-
-  // Style:
-  //   - locked M4: sfondo giallo, badge 🔒
-  //   - in mandata precedente: opaco grigio
-  //   - in mandata futura ma gia' selezionato: opaco diverso
-  //   - normale: card neutra
-  let cardClass = ''
-  if (!mandataAbilitataPerItem && isM4Forzata) cardClass = 'bg-yellow-900/15 opacity-90'
-  else if (!interattivo && inMandataPrecedente) cardClass = 'bg-gray-800/40 opacity-50'
-  else if (!interattivo && inMandataFutura)    cardClass = 'bg-gray-800/30 opacity-60'
-  else if (!interattivo)                        cardClass = 'opacity-60'
+function renderItemRow({ item, quantities, setQty, mandataAttiva }) {
+  const qNow = qtyOf(quantities, item.id, mandataAttiva)
+  const qTotale = totalQtyOf(quantities, item.id)
+  // E' "in altre mandate" se ha quantita' > 0 ma NON nella mandata corrente
+  const inAltreMandate = qNow === 0 && qTotale > 0
+  // Sfondo grigio se compare in altre mandate; sfondo normale altrimenti
+  const cardClass = inAltreMandate ? 'bg-gray-800/40' : ''
 
   return (
     <li key={item.id} className={`card flex items-start gap-3 ${cardClass}`}>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="font-semibold break-words whitespace-normal">{item.nome}</p>
-          {!mandataAbilitataPerItem && isM4Forzata && (
-            <span className="text-[10px] px-2 py-0.5 rounded-full
-                             bg-yellow-900/50 border border-yellow-700 uppercase tracking-wide">
-              🔒 dopo i pasti · M4
+          {qNow > 0 && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wide
+                             bg-cameriere/40 border border-cameriere">
+              M{mandataAttiva}
             </span>
           )}
-          {q > 0 && (
-            <span className={`text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wide
-                              ${inTabCorrente
-                                ? 'bg-cameriere/40 border border-cameriere'
-                                : 'bg-gray-700 border border-gray-500'}`}>
-              M{mandataItem}
+          {inAltreMandate && (
+            <span className="text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wide
+                             bg-gray-700 border border-gray-500 opacity-80"
+                  title="Gia' selezionato in altre mandate">
+              anche in altre M
             </span>
           )}
         </div>
@@ -227,20 +234,19 @@ function renderItemRow({ item, quantities, setQty, mandataAttiva, mandateAbilita
       <div className="flex items-center gap-2 shrink-0">
         <button
           type="button"
-          onClick={() => interattivo && setQty(item, -1)}
-          disabled={!interattivo || q === 0}
+          onClick={() => setQty(item, -1)}
+          disabled={qNow === 0}
           className="w-11 h-11 rounded-xl bg-red-700 font-bold text-xl
                      active:scale-95 transition-transform disabled:opacity-30"
         >
           −
         </button>
-        <span className="w-8 text-center text-lg font-bold">{q}</span>
+        <span className="w-8 text-center text-lg font-bold">{qNow}</span>
         <button
           type="button"
-          onClick={() => interattivo && setQty(item, +1)}
-          disabled={!interattivo}
+          onClick={() => setQty(item, +1)}
           className="w-11 h-11 rounded-xl bg-green-700 font-bold text-xl
-                     active:scale-95 transition-transform disabled:opacity-30"
+                     active:scale-95 transition-transform"
         >
           +
         </button>

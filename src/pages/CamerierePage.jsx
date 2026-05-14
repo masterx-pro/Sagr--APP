@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
-import MenuSelector from '../components/MenuSelector.jsx'
+import MenuSelector, { flattenQuantities } from '../components/MenuSelector.jsx'
 import TableBadge from '../components/TableBadge.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
 import { getServizioAttuale } from '../utils/servizio.js'
@@ -82,7 +82,7 @@ export default function CamerierePage({ user, onLogout }) {
   const {
     orders, fetchOrdiniAttivi,
     createOrder, addItemsToOrder,
-    markMandataConsegnata, sbloccaMandata4,
+    markMandataConsegnata, inviaM4,
     stornaOrdine, fetchImpostazioni,
   } = useOrders()
 
@@ -255,12 +255,12 @@ export default function CamerierePage({ user, onLogout }) {
             onBack={() => setView('new')}
             onConfirm={async (pagamento) => {
               const servizio = getServizioAttuale()
-              const itemsArr = Object.entries(draft.qty).map(([id, val]) => {
-                const menuItem = menu.find(m => m.id === id)
+              const itemsArr = flattenQuantities(draft.qty).map(r => {
+                const menuItem = menu.find(m => m.id === r.itemId)
                 return menuItem ? {
                   menuItem,
-                  quantita: val.quantita,
-                  mandata: val.mandata,
+                  quantita: r.quantita,
+                  mandata: r.mandata,
                 } : null
               }).filter(Boolean)
 
@@ -300,8 +300,8 @@ export default function CamerierePage({ user, onLogout }) {
               await markMandataConsegnata(selectedId, mandataNum, categoria)
               await refetchOrders()
             }}
-            onSbloccaM4={async () => {
-              await sbloccaMandata4(selectedId)
+            onInviaM4={async () => {
+              await inviaM4(selectedId)
               await refetchOrders()
             }}
             onStorna={async (note, tipoPagamentoOverride) => {
@@ -519,17 +519,17 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
   const tavoloRef = useRef(null)
 
   const itemsArr = useMemo(() => {
-    return Object.entries(qty)
-      .map(([id, val]) => {
-        const menuItem = menu.find(m => m.id === id)
-        return menuItem ? { menuItem, quantita: val.quantita, mandata: val.mandata } : null
-      })
-      .filter(Boolean)
+    return flattenQuantities(qty).map(r => {
+      const menuItem = menu.find(m => m.id === r.itemId)
+      return menuItem ? { menuItem, quantita: r.quantita, mandata: r.mandata } : null
+    }).filter(Boolean)
   }, [qty, menu])
 
   const totale = itemsArr.reduce(
     (s, it) => s + Number(it.menuItem.prezzo) * it.quantita, 0
   )
+
+  const totPezzi = itemsArr.reduce((s, it) => s + it.quantita, 0)
 
   const canSubmit =
     tavolo && Number(tavolo) > 0
@@ -542,7 +542,7 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
   }
 
   return (
-    <div className="pb-32 mobile-landscape:pb-24">
+    <div className="pb-6">
       <div className="flex items-center justify-between mb-2">
         <span className="text-sm opacity-70">Nuovo ordine</span>
         <button
@@ -600,25 +600,31 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
         />
       </label>
 
-      {/* In creazione ordine M4 e' bloccata: si sblocca solo dopo M3 pronta */}
-      <MenuSelector items={menu} quantities={qty} onChange={setQty} mandateAbilitate={[1,2,3]} />
-
-      <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo
-                      p-3 mobile-landscape:p-2 z-20">
-        <div className="flex items-center justify-between mb-2">
-          <span className="text-sm opacity-80">
-            {itemsArr.reduce((s, it) => s + it.quantita, 0)} pezzi
-          </span>
-          <span className="text-xl font-bold">€ {totale.toFixed(2)}</span>
-        </div>
-        <button
-          onClick={submit}
-          disabled={!canSubmit}
-          className="btn-success w-full text-lg"
-        >
-          Avanti → Pagamento
-        </button>
-      </div>
+      <MenuSelector
+        items={menu}
+        quantities={qty}
+        onChange={setQty}
+        footer={
+          <div className="rounded-xl border border-bordo bg-pannello p-3">
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-sm opacity-80">{totPezzi} pezzi</span>
+              <span className="text-xl font-bold">€ {totale.toFixed(2)}</span>
+            </div>
+            <button
+              onClick={submit}
+              disabled={!canSubmit}
+              className="btn-success w-full text-lg"
+            >
+              Avanti → Pagamento
+            </button>
+            {!canSubmit && (
+              <p className="text-xs opacity-70 mt-2 text-center">
+                Compila tavolo, nome cliente e almeno una voce
+              </p>
+            )}
+          </div>
+        }
+      />
     </div>
   )
 }
@@ -629,12 +635,10 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
   const [busy, setBusy] = useState(false)
 
   const itemsArr = useMemo(() => {
-    return Object.entries(draft.qty)
-      .map(([id, val]) => {
-        const menuItem = menu.find(m => m.id === id)
-        return menuItem ? { menuItem, quantita: val.quantita, mandata: val.mandata } : null
-      })
-      .filter(Boolean)
+    return flattenQuantities(draft.qty).map(r => {
+      const menuItem = menu.find(m => m.id === r.itemId)
+      return menuItem ? { menuItem, quantita: r.quantita, mandata: r.mandata } : null
+    }).filter(Boolean)
   }, [draft, menu])
 
   const totale = itemsArr.reduce(
@@ -667,8 +671,8 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
           </p>
         )}
         <ul className="text-sm divide-y divide-bordo">
-          {itemsArr.map(it => (
-            <li key={it.menuItem.id} className="py-1 flex items-center gap-2">
+          {itemsArr.map((it, idx) => (
+            <li key={`${it.menuItem.id}-${it.mandata}-${idx}`} className="py-1 flex items-center gap-2">
               <span className="text-[10px] px-2 py-0.5 rounded-full bg-cameriere/40 border border-cameriere">
                 M{it.mandata}
               </span>
@@ -723,10 +727,10 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
 
 // -------------------- DETTAGLIO ORDINE --------------------
 
-function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaM4, onStorna }) {
+function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInviaM4, onStorna }) {
   const [order, setOrder] = useState(null)
-  // adding: null | 'normal' | 'm4'
-  const [adding, setAdding] = useState(null)
+  // adding: null | true (M4 e' libera dalla creazione, non serve modalita' separata)
+  const [adding, setAdding] = useState(false)
   const [qty, setQty] = useState({})
   const [busy, setBusy] = useState(false)
 
@@ -755,70 +759,62 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
 
   const items = order.order_items || []
 
-  // VISTA "AGGIUNGI ITEMS" (normal o m4)
+  // VISTA "AGGIUNGI ITEMS"
   if (adding) {
-    const isM4Mode = adding === 'm4'
-    const mandateAbilitate = isM4Mode ? [4] : [1, 2, 3]
-    const itemsArr = Object.entries(qty)
-      .map(([id, val]) => {
-        const m = menu.find(mm => mm.id === id)
-        return m ? { menuItem: m, quantita: val.quantita, mandata: val.mandata } : null
-      })
-      .filter(Boolean)
+    const itemsArr = flattenQuantities(qty).map(r => {
+      const m = menu.find(mm => mm.id === r.itemId)
+      return m ? { menuItem: m, quantita: r.quantita, mandata: r.mandata } : null
+    }).filter(Boolean)
     const totaleAgg = itemsArr.reduce(
       (s, it) => s + Number(it.menuItem.prezzo) * it.quantita, 0
     )
+    const totPezziAgg = itemsArr.reduce((s, it) => s + it.quantita, 0)
 
     return (
-      <div className="pb-32 mobile-landscape:pb-24">
+      <div className="pb-6">
         <p className="mb-3 font-semibold">
-          {isM4Mode ? '🔓 Sblocca M4 — dolci / caffè / amari' : 'Aggiungi'} al tavolo {order.numero_tavolo}{order.nome_cliente ? ' · ' + order.nome_cliente : ''}
+          Aggiungi al tavolo {order.numero_tavolo}{order.nome_cliente ? ' · ' + order.nome_cliente : ''}
         </p>
         <MenuSelector
           items={menu}
           quantities={qty}
           onChange={setQty}
-          mandateAbilitate={mandateAbilitate}
+          footer={
+            <div className="rounded-xl border border-bordo bg-pannello p-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-sm opacity-80">{totPezziAgg} pezzi</span>
+                <span className="text-xl font-bold">+ € {totaleAgg.toFixed(2)}</span>
+              </div>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => { setAdding(false); setQty({}) }}
+                  className="btn-neutral flex-1"
+                >
+                  Annulla
+                </button>
+                <button
+                  disabled={itemsArr.length === 0 || busy}
+                  onClick={async () => {
+                    setBusy(true)
+                    try {
+                      await onAddItems(itemsArr)
+                      setQty({})
+                      setAdding(false)
+                      await load()
+                    } catch (e) {
+                      alert('Errore: ' + (e.message || e))
+                    } finally {
+                      setBusy(false)
+                    }
+                  }}
+                  className="btn-success flex-1"
+                >
+                  Aggiungi
+                </button>
+              </div>
+            </div>
+          }
         />
-        <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo
-                        p-3 mobile-landscape:p-2 z-20">
-          <div className="flex items-center justify-between mb-2">
-            <span className="text-sm opacity-80">
-              {itemsArr.reduce((s, it) => s + it.quantita, 0)} pezzi
-            </span>
-            <span className="text-xl font-bold">+ € {totaleAgg.toFixed(2)}</span>
-          </div>
-          <div className="flex gap-2">
-            <button
-              onClick={() => { setAdding(null); setQty({}) }}
-              className="btn-neutral flex-1"
-            >
-              Annulla
-            </button>
-            <button
-              disabled={itemsArr.length === 0 || busy}
-              onClick={async () => {
-                setBusy(true)
-                try {
-                  // In modalita' M4 gli items partono gia' 'in_preparazione'
-                  // cosi' cucina/bar li vedono subito attivi.
-                  const opts = isM4Mode ? { statoIniziale: 'in_preparazione' } : undefined
-                  await onAddItems(itemsArr, opts)
-                  setQty({})
-                  setAdding(null)
-                  await load()
-                } catch (e) {
-                  alert('Errore: ' + (e.message || e))
-                } finally {
-                  setBusy(false)
-                }
-              }}
-              className="btn-success flex-1"
-            >
-              Aggiungi
-            </button>
-          </div>
-        </div>
       </div>
     )
   }
@@ -832,11 +828,11 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
   const cucinaNumeri = getNumeriMandata(cucinaItems)
   const barNumeri    = getNumeriMandata(barItems)
 
-  // Sblocco M4 disponibile? Si attiva quando M3 cucina e' pronta o consegnata.
-  const cucinaM3 = cucinaGroups[3]
-  const m3Pronta = cucinaM3 && cucinaM3.length > 0
-    && cucinaM3.every(i => i.mandata_stato === 'pronta' || i.mandata_stato === 'consegnata')
-  const puoSbloccareM4 = !stornato && !inCassa && m3Pronta
+  // "Invia M4" disponibile se l'ordine ha items M4 ancora in_attesa
+  // (non ancora rilasciati al bar) e non e' stornato/in cassa.
+  const m4Items = items.filter(i => i.mandata === 4)
+  const m4DaInviare = m4Items.length > 0 && m4Items.some(i => i.mandata_stato === 'in_attesa')
+  const puoInviareM4 = !stornato && !inCassa && m4DaInviare
 
   const azioneStorna = async () => {
     const note = window.prompt('Motivo dello storno (opzionale):')
@@ -933,31 +929,28 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         onConsegnata={(n) => onMandataConsegnata(n, 'bar')}
       />
 
-      {puoSbloccareM4 && (
+      {puoInviareM4 && (
         <button
           disabled={busy}
           onClick={async () => {
-            if (!window.confirm('Sbloccare M4? Verra\' aperto il menu per ordinare dolci, caffe\' e amari.')) return
+            if (!window.confirm('Inviare M4 al bar adesso?\nDolci, caffe\' e amari verranno preparati.')) return
             try {
               setBusy(true)
-              // 1) sblocca eventuali items M4 gia' presenti (in_attesa -> in_preparazione)
-              await onSbloccaM4()
-              // 2) apri modalita' aggiunta items M4
-              setAdding('m4')
+              await onInviaM4()
             } catch (e) {
               alert('Errore: ' + (e.message || e))
             } finally {
               setBusy(false)
             }
           }}
-          className="btn-primary w-full"
+          className="w-full rounded-xl bg-amber-600 text-white font-bold py-3 active:scale-95 animate-pulse"
         >
-          🔓 Sblocca M4 — dolci / caffè / amari
+          ☕ Invia M4 — Dolci, Caffè e Amari ({m4Items.reduce((s, i) => s + i.quantita, 0)} pezzi)
         </button>
       )}
 
       {!stornato && !inCassa && (
-        <button onClick={() => setAdding('normal')} className="btn-neutral w-full" disabled={busy}>
+        <button onClick={() => setAdding(true)} className="btn-neutral w-full" disabled={busy}>
           + Aggiungi item
         </button>
       )}

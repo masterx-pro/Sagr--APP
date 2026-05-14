@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useState, useRef } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import TableBadge from '../components/TableBadge.jsx'
@@ -6,7 +6,6 @@ import ServizioBadge from '../components/ServizioBadge.jsx'
 import { getServizioAttuale } from '../utils/servizio.js'
 import {
   groupByMandata,
-  getNumeriMandata,
   getStatoMandataDisplay,
   getMandataAttiva,
   getMandataProntaAt,
@@ -16,17 +15,23 @@ import {
 } from '../utils/mandateUtils.js'
 
 /**
- * StationPage v3: Bar e Cucina, due tab:
- *   📋 Per Tavolo  → ordini con mandate progressive
- *   📊 Aggregato   → ordini raggruppati per pietanza (mandate attive)
+ * StationPage v5:
  *
- * Flusso progressivo per ogni mandata:
- *   in_attesa       → [📋 Da preparare]      (click -> in_preparazione)
- *   in_preparazione → [🔄 In preparazione]   (click -> pronta)
- *   pronta          → [✅ Pronto] (no click, collassa in fondo)
+ * Filtraggio items per categoria:
+ *   - CUCINA: categoria='cucina' AND mandata IN (1,2,3)   (M4 esclusa)
+ *   - BAR:    categoria='bar' (sempre)
+ *             OR (mandata=4 AND mandata_stato != 'in_attesa')  ← anche dolci cucina!
  *
- * Timer mandata successiva: tempo_timer_mandate_min minuti dopo che la
- * mandata corrente e' marcata pronta, la successiva diventa rossa.
+ * Blocco sequenziale CUCINA: M2 disponibile solo se M1='pronta'; M3 se M2='pronta'.
+ *
+ * Pulsanti progressivi (cucina e bar):
+ *   in_attesa       → [📋 Da preparare]     (in_preparazione)
+ *   in_preparazione → [🔄 In preparazione]  (pronta)
+ *   pronta          → [✅ Pronto]           (no click)
+ *
+ * Dopo "Pronto", il barista deve fare swipe sx/dx per rimuovere la card.
+ * In cucina: i tavoli "completati" (tutte le mandate pronte/consegnate)
+ * scendono in fondo con badge "✅ Completato" e si rimuovono via swipe.
  */
 
 const PORTATE_CUCINA = [
@@ -56,6 +61,19 @@ function groupByPortata(items, schema) {
   return groups.filter(g => g.items.length > 0)
 }
 
+// Filtro items "miei" in base a categoria della stazione.
+function itemsDellaStazione(orderItems, categoria) {
+  const items = orderItems || []
+  if (categoria === 'cucina') {
+    return items.filter(i => i.categoria === 'cucina' && (i.mandata ?? 1) < 4)
+  }
+  // bar
+  return items.filter(i =>
+    i.categoria === 'bar'
+    || (i.mandata === 4 && i.mandata_stato !== 'in_attesa')
+  )
+}
+
 const TICK_MS = 15_000
 
 export default function StationPage({ user, onLogout, categoria, titolo, coloreHeader }) {
@@ -65,6 +83,12 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
   const { markMandataInPreparazione, markMandataReady, fetchImpostazioni } = useOrders()
   const [refreshTick, setRefreshTick] = useState(0)
   const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
+  // Set di orderId che il barista/cuoco ha "dismissato" via swipe
+  const [dismissedIds, setDismissedIds] = useState(() => new Set())
+
+  const dismiss = (orderId) => setDismissedIds(s => {
+    const n = new Set(s); n.add(orderId); return n
+  })
 
   const load = async () => {
     const { data, error } = await supabase
@@ -73,14 +97,9 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
       .in('stato', ['confermato', 'stornato'])
       .eq('servizio', servizioCorrente)
       .order('created_at', { ascending: true })
-    if (error) {
-      console.error(error)
-      return
-    }
-    const filtrati = (data || []).filter(o => {
-      const myItems = (o.order_items || []).filter(i => i.categoria === categoria)
-      return myItems.some(i => i.mandata_stato !== 'consegnata')
-    })
+    if (error) { console.error(error); return }
+    // Tengo solo ordini con almeno un item "mio"
+    const filtrati = (data || []).filter(o => itemsDellaStazione(o.order_items, categoria).length > 0)
     setOrders(filtrati)
   }
 
@@ -117,6 +136,12 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
     return () => clearInterval(t)
   }, [])
 
+  // Ordini "visibili" = non dismissati localmente
+  const ordersVisibili = useMemo(
+    () => orders.filter(o => !dismissedIds.has(o.id)),
+    [orders, dismissedIds]
+  )
+
   return (
     <div className="min-h-screen flex flex-col">
       <header className={`${coloreHeader} px-4 py-3 flex items-center justify-between
@@ -139,31 +164,19 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
       <nav className="grid grid-cols-2 gap-1 p-2 bg-pannello border-b border-bordo
                       sticky top-[3.25rem] z-10 mobile-landscape:top-[2.5rem]
                       mobile-landscape:p-1">
-        <TabBtn
-          active={view === 'per-tavolo'}
-          coloreHeader={coloreHeader}
-          onClick={() => setView('per-tavolo')}
-        >
-          📋 Per Tavolo
-        </TabBtn>
-        <TabBtn
-          active={view === 'aggregato'}
-          coloreHeader={coloreHeader}
-          onClick={() => setView('aggregato')}
-        >
-          📊 Aggregato
-        </TabBtn>
+        <TabBtn active={view === 'per-tavolo'} coloreHeader={coloreHeader} onClick={() => setView('per-tavolo')}>📋 Per Tavolo</TabBtn>
+        <TabBtn active={view === 'aggregato'}  coloreHeader={coloreHeader} onClick={() => setView('aggregato')}>📊 Aggregato</TabBtn>
       </nav>
 
       <main className="flex-1 p-4 mobile-landscape:p-3">
-        {orders.length === 0 ? (
+        {ordersVisibili.length === 0 ? (
           <p className="text-center text-2xl opacity-60 py-16
                         mobile-landscape:py-6 mobile-landscape:text-xl">
             Tutto pronto 🎉
           </p>
         ) : view === 'per-tavolo' ? (
           <VistaPerTavolo
-            orders={orders}
+            orders={ordersVisibili}
             categoria={categoria}
             impostazioni={impostazioni}
             onMandataInPreparazione={async (orderId, mandataNum) => {
@@ -174,9 +187,10 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
               try { await markMandataReady(orderId, mandataNum, categoria); setRefreshTick(t => t + 1) }
               catch (e) { alert('Errore: ' + (e.message || e)) }
             }}
+            onDismiss={dismiss}
           />
         ) : (
-          <VistaAggregata orders={orders} categoria={categoria} />
+          <VistaAggregata orders={ordersVisibili} categoria={categoria} />
         )}
       </main>
     </div>
@@ -200,54 +214,138 @@ function TabBtn({ active, onClick, coloreHeader, children }) {
 
 // -------------------- VISTA PER TAVOLO --------------------
 
-function VistaPerTavolo({ orders, categoria, impostazioni, onMandataInPreparazione, onMandataPronta }) {
+function VistaPerTavolo({ orders, categoria, impostazioni, onMandataInPreparazione, onMandataPronta, onDismiss }) {
+  // Ordina: attivi in cima (cronologico), completati in fondo
+  const { attivi, completati } = useMemo(() => {
+    const a = [], c = []
+    for (const o of orders) {
+      const myItems = itemsDellaStazione(o.order_items, categoria)
+      const tuttoFatto = myItems.length > 0 && myItems.every(i =>
+        i.mandata_stato === 'pronta' || i.mandata_stato === 'consegnata'
+      )
+      if (tuttoFatto) c.push(o); else a.push(o)
+    }
+    return { attivi: a, completati: c }
+  }, [orders, categoria])
+
   return (
-    <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
-                   mobile-landscape:grid-cols-2 gap-3">
-      {orders.map(order => (
-        <StationCard
-          key={order.id}
-          order={order}
-          categoria={categoria}
-          impostazioni={impostazioni}
-          onInPreparazione={(m) => onMandataInPreparazione(order.id, m)}
-          onPronta={(m) => onMandataPronta(order.id, m)}
-        />
-      ))}
-    </ul>
+    <>
+      <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
+                     mobile-landscape:grid-cols-2 gap-3">
+        {attivi.map(order => (
+          <StationCard
+            key={order.id}
+            order={order}
+            categoria={categoria}
+            impostazioni={impostazioni}
+            completato={false}
+            onInPreparazione={(m) => onMandataInPreparazione(order.id, m)}
+            onPronta={(m) => onMandataPronta(order.id, m)}
+            onDismiss={() => onDismiss(order.id)}
+          />
+        ))}
+      </ul>
+
+      {completati.length > 0 && (
+        <>
+          <h2 className="mt-6 mb-2 text-xs uppercase tracking-widest opacity-70">
+            ✅ Completati ({completati.length}) — swipe per rimuovere
+          </h2>
+          <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
+                         mobile-landscape:grid-cols-2 gap-3">
+            {completati.map(order => (
+              <StationCard
+                key={order.id}
+                order={order}
+                categoria={categoria}
+                impostazioni={impostazioni}
+                completato={true}
+                onInPreparazione={(m) => onMandataInPreparazione(order.id, m)}
+                onPronta={(m) => onMandataPronta(order.id, m)}
+                onDismiss={() => onDismiss(order.id)}
+              />
+            ))}
+          </ul>
+        </>
+      )}
+    </>
   )
 }
 
-function StationCard({ order, categoria, impostazioni, onInPreparazione, onPronta }) {
-  const myItems = (order.order_items || []).filter(i => i.categoria === categoria)
+// -------------------- SWIPE WRAPPER --------------------
+
+function useSwipeToDismiss(onDismiss, abilitato) {
+  const [dragX, setDragX] = useState(0)
+  const [animatingOut, setAnimatingOut] = useState(false)
+  const startX = useRef(null)
+
+  const onTouchStart = (e) => {
+    if (!abilitato || animatingOut) return
+    startX.current = e.touches[0].clientX
+  }
+  const onTouchMove = (e) => {
+    if (!abilitato || animatingOut || startX.current == null) return
+    setDragX(e.touches[0].clientX - startX.current)
+  }
+  const onTouchEnd = () => {
+    if (!abilitato || animatingOut) return
+    if (Math.abs(dragX) > 80) {
+      // Vola fuori e dismiss
+      setAnimatingOut(true)
+      setDragX(dragX > 0 ? 600 : -600)
+      setTimeout(() => onDismiss(), 220)
+    } else {
+      setDragX(0)
+    }
+    startX.current = null
+  }
+
+  const style = {
+    transform: `translateX(${dragX}px)`,
+    transition: startX.current == null || animatingOut ? 'transform 200ms ease-out, opacity 200ms ease-out' : 'none',
+    opacity: animatingOut ? 0 : 1,
+    touchAction: 'pan-y',
+  }
+
+  return { dragHandlers: { onTouchStart, onTouchMove, onTouchEnd }, style }
+}
+
+function StationCard({ order, categoria, impostazioni, completato, onInPreparazione, onPronta, onDismiss }) {
+  const myItems = itemsDellaStazione(order.order_items, categoria)
   const groupsByMandata = groupByMandata(myItems)
-  const numeri = getNumeriMandata(myItems)
+  const numeri = Object.keys(groupsByMandata).map(Number).sort((a, b) => a - b)
   const stornato = order.stato === 'stornato'
 
-  // Ordino le mandate: attive (non pronta/consegnata) in alto, pronte/consegnate in fondo.
+  // Le mandate sono ATTIVE (in_attesa/in_preparazione) o ARCHIVIATE (pronta/consegnata).
   const { attive, archiviate } = useMemo(() => {
-    const attive = [], archiviate = []
+    const a = [], ar = []
     for (const n of numeri) {
       const s = getStatoMandataDisplay(groupsByMandata[n])
-      if (s === 'pronta' || s === 'consegnata') archiviate.push(n)
-      else attive.push(n)
+      if (s === 'pronta' || s === 'consegnata') ar.push(n); else a.push(n)
     }
-    return { attive, archiviate }
+    return { attive: a, archiviate: ar }
   }, [numeri, groupsByMandata])
 
-  // Timer per la mandata "successiva":
-  //   per ogni mandata attiva, guardo se ESISTE una mandata precedente
-  //   con stato 'pronta' (cioe' archiviata). Se si', leggo mandata_pronta_at
-  //   piu' recente e calcolo se il timer e' scaduto.
+  // Blocco sequenziale CUCINA: M2 disponibile se M1 archiviata, M3 se M2 archiviata.
+  // Per BAR il blocco non si applica: le mandate bar possono procedere in parallelo.
+  const mandataBloccata = (n) => {
+    if (categoria !== 'cucina') return false
+    if (n === 1) return false
+    const prec = n - 1
+    if (!numeri.includes(prec)) return false
+    const sPrec = getStatoMandataDisplay(groupsByMandata[prec])
+    return sPrec !== 'pronta' && sPrec !== 'consegnata'
+  }
+
+  // Timer per la mandata successiva (dopo che la precedente e' pronta)
   const timerPerMandata = useMemo(() => {
     const out = {}
     for (const n of attive) {
-      const precedente = [...numeri].reverse().find(x => x < n && getStatoMandataDisplay(groupsByMandata[x]) === 'pronta')
-      if (precedente == null) continue
-      const proAt = getMandataProntaAt(groupsByMandata[precedente])
+      const prec = [...numeri].reverse().find(x => x < n && getStatoMandataDisplay(groupsByMandata[x]) === 'pronta')
+      if (prec == null) continue
+      const proAt = getMandataProntaAt(groupsByMandata[prec])
       if (!proAt) continue
       out[n] = {
-        proAt,
         scaduto: timerMandataScaduto(proAt, impostazioni),
         secondi: secondiRimanentiTimerMandata(proAt, impostazioni),
       }
@@ -255,8 +353,34 @@ function StationCard({ order, categoria, impostazioni, onInPreparazione, onPront
     return out
   }, [attive, numeri, groupsByMandata, impostazioni])
 
+  // Swipe disponibile se: bar+tutte pronte/consegnate, oppure cucina+completato
+  const swipeAbilitato = !stornato && (
+    (categoria === 'bar'    && attive.length === 0) ||
+    (categoria === 'cucina' && completato)
+  )
+  const { dragHandlers, style } = useSwipeToDismiss(onDismiss, swipeAbilitato)
+
+  const sfondoCompletato = completato ? 'bg-gray-900/40 opacity-80' : ''
+
   return (
-    <li className="card relative overflow-hidden">
+    <li
+      className={`card relative overflow-hidden ${sfondoCompletato}`}
+      style={style}
+      {...dragHandlers}
+    >
+      {/* Bottone X (desktop fallback per swipe) */}
+      {swipeAbilitato && (
+        <button
+          onClick={onDismiss}
+          aria-label="Rimuovi card"
+          title="Rimuovi card"
+          className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/50 text-white text-sm
+                     z-20 flex items-center justify-center active:scale-90"
+        >
+          ✕
+        </button>
+      )}
+
       {stornato && (
         <div className="absolute inset-0 z-10 pointer-events-none
                         bg-red-900/40 border-2 border-red-600 rounded-xl
@@ -268,14 +392,15 @@ function StationCard({ order, categoria, impostazioni, onInPreparazione, onPront
       )}
 
       <div className={stornato ? 'opacity-60' : ''}>
-        <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <div className="flex items-center justify-between mb-3 flex-wrap gap-2 pr-8">
           <div className="flex items-center gap-2 flex-wrap">
             <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="lg" />
-            {order.nome_cliente && (
-              <span className="font-bold">· {order.nome_cliente}</span>
-            )}
+            {order.nome_cliente && <span className="font-bold">· {order.nome_cliente}</span>}
             {order.tipo_pagamento === 'bancomat' && <span title="bancomat">💳</span>}
             {order.tipo_pagamento === 'contanti' && <span title="contanti">💵</span>}
+            {completato && (
+              <span className="badge bg-blue-700 text-white text-xs">✅ Completato</span>
+            )}
           </div>
           <span className="text-sm opacity-80">
             {new Date(order.created_at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
@@ -296,6 +421,7 @@ function StationCard({ order, categoria, impostazioni, onInPreparazione, onPront
               items={groupsByMandata[n]}
               categoria={categoria}
               timer={timerPerMandata[n]}
+              bloccata={mandataBloccata(n)}
               disabledByStorno={stornato}
               onInPreparazione={() => onInPreparazione(n)}
               onPronta={() => onPronta(n)}
@@ -326,27 +452,22 @@ function aggregaPerNome(items) {
   return Array.from(map.values())
 }
 
-function MandataBlock({ numero, items, categoria, timer, disabledByStorno, onInPreparazione, onPronta }) {
+function MandataBlock({ numero, items, categoria, timer, bloccata, disabledByStorno, onInPreparazione, onPronta }) {
   const stato = getStatoMandataDisplay(items)
   const [busy, setBusy] = useState(false)
 
-  const barM4Bloccata = categoria === 'bar' && numero === 4
-    && items.every(i => i.mandata_stato === 'in_attesa')
+  const urgente = !disabledByStorno && !bloccata && timer?.scaduto
 
-  const urgente = !disabledByStorno && timer?.scaduto
-
-  // Stile bordo
   let bordoCls = 'border-l-yellow-500 bg-yellow-900/15'
-  if (urgente)            bordoCls = 'border-l-red-500 bg-red-900/25 animate-pulse'
+  if (bloccata)                         bordoCls = 'border-l-gray-600 bg-gray-800/40 opacity-50'
+  else if (urgente)                     bordoCls = 'border-l-red-500 bg-red-900/25 animate-pulse'
   else if (stato === 'in_preparazione') bordoCls = 'border-l-orange-500 bg-orange-900/20'
-  else if (barM4Bloccata) bordoCls = 'border-l-yellow-500 bg-yellow-900/10 opacity-60'
 
   const aggr = useMemo(() => aggregaPerNome(items), [items])
 
-  // Header label
   const header = (() => {
+    if (bloccata)           return `M${numero} · ⏳ In attesa di M${numero - 1}`
     if (urgente)            return `M${numero} · 🔴 URGENTE`
-    if (barM4Bloccata)      return `M${numero} · 🔒 attesa sblocco cameriere`
     if (timer?.secondi != null && timer.secondi > 0)
                             return `M${numero} · ⏱ ${formatCountdownSec(timer.secondi)} al via`
     if (stato === 'in_preparazione')
@@ -354,11 +475,10 @@ function MandataBlock({ numero, items, categoria, timer, disabledByStorno, onInP
     return `M${numero} · ⏳ da preparare`
   })()
 
-  // Pulsante azione
   const handler = stato === 'in_attesa' ? onInPreparazione : onPronta
   const btnLabel = stato === 'in_attesa' ? '📋 Da preparare' : '🔄 In preparazione'
   const btnBg    = stato === 'in_attesa' ? 'bg-blue-700' : 'bg-orange-600'
-  const showBtn  = !disabledByStorno && !barM4Bloccata
+  const showBtn  = !disabledByStorno && !bloccata
 
   const renderRiga = ({ nome, q }) => (
     <li key={nome} className="flex items-start justify-between gap-3 text-lg">
@@ -373,23 +493,17 @@ function MandataBlock({ numero, items, categoria, timer, disabledByStorno, onInP
         <span>━━ {header} ━━</span>
       </div>
 
-      {barM4Bloccata ? (
-        <p className="text-sm italic opacity-80 py-1">
-          Caffè/amari in attesa di sblocco dal cameriere…
-        </p>
-      ) : (
-        <ul className="space-y-1 mb-2">
-          {categoria === 'cucina'
-            ? groupByPortata(aggr, PORTATE_CUCINA).flatMap(g => [
-                <li key={`hdr-${g.label}`}
-                    className="text-[10px] uppercase tracking-widest opacity-70 mt-1 first:mt-0">
-                  — {g.label} —
-                </li>,
-                ...g.items.map(renderRiga),
-              ])
-            : aggr.map(renderRiga)}
-        </ul>
-      )}
+      <ul className="space-y-1 mb-2">
+        {categoria === 'cucina'
+          ? groupByPortata(aggr, PORTATE_CUCINA).flatMap(g => [
+              <li key={`hdr-${g.label}`}
+                  className="text-[10px] uppercase tracking-widest opacity-70 mt-1 first:mt-0">
+                — {g.label} —
+              </li>,
+              ...g.items.map(renderRiga),
+            ])
+          : aggr.map(renderRiga)}
+      </ul>
 
       {showBtn && (
         <button
@@ -407,7 +521,7 @@ function MandataBlock({ numero, items, categoria, timer, disabledByStorno, onInP
   )
 }
 
-function MandataArchivedBlock({ numero, items, categoria }) {
+function MandataArchivedBlock({ numero, items }) {
   const stato = getStatoMandataDisplay(items)
   const aggr = useMemo(() => aggregaPerNome(items), [items])
   const consegnata = stato === 'consegnata'
@@ -429,20 +543,21 @@ function MandataArchivedBlock({ numero, items, categoria }) {
 }
 
 // -------------------- VISTA AGGREGATA --------------------
+//
+// Mostra SOLO items che la stazione deve ancora preparare:
+// mandata_stato IN ('in_attesa', 'in_preparazione').
+// Escludi pronta, consegnata, in_pausa.
 
 function VistaAggregata({ orders, categoria }) {
   const aggregated = useMemo(() => {
     const map = new Map()
     for (const order of orders) {
       if (order.stato === 'stornato') continue
-      const myItems = (order.order_items || []).filter(i => i.categoria === categoria)
-      const mAttiva = getMandataAttiva(myItems)
-      if (mAttiva == null) continue
+      const myItems = itemsDellaStazione(order.order_items, categoria)
 
       for (const it of myItems) {
-        if (it.mandata !== mAttiva) continue
-        if (!['in_attesa', 'in_preparazione', 'pronta'].includes(it.mandata_stato)) continue
-        // Bar M4 visibile solo se sbloccata
+        if (!['in_attesa', 'in_preparazione'].includes(it.mandata_stato)) continue
+        // Bar M4 visibile solo se sbloccata (in_preparazione)
         if (categoria === 'bar' && it.mandata === 4 && it.mandata_stato === 'in_attesa') continue
 
         const key = it.nome_item
@@ -478,7 +593,7 @@ function VistaAggregata({ orders, categoria }) {
     : { sepText: 'text-bar',    sepLine: 'bg-bar/40',    badgeBg: 'bg-bar'    }
 
   if (aggregated.length === 0) {
-    return <p className="text-center text-xl opacity-60 py-12">Nessuna mandata attiva</p>
+    return <p className="text-center text-xl opacity-60 py-12">Nulla da preparare 🎉</p>
   }
 
   return (

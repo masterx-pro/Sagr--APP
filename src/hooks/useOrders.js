@@ -179,9 +179,10 @@ export function useOrders({ autoload = false } = {}) {
     if (e1) throw e1
 
     const rows = items.map(it => {
-      // La mandata viene SEMPRE derivata dalla sottocategoria del menu_item
-      // (autoritativa in v3). Il parametro `it.mandata` viene ignorato.
-      const mandata = getMandataPerItem(it.menuItem)
+      // In v5 la mandata e' ESPLICITA: il chiamante decide a quale
+      // mandata appartiene ogni riga. Fallback alla derivazione per
+      // sottocategoria solo se la riga non specifica `mandata`.
+      const mandata = it.mandata ?? getMandataPerItem(it.menuItem)
       return {
         order_id: order.id,
         item_id: it.menuItem.id,
@@ -222,7 +223,7 @@ export function useOrders({ autoload = false } = {}) {
     else                                    initialMandataStato = 'in_attesa'
 
     const rows = items.map(it => {
-      const mandata = getMandataPerItem(it.menuItem)
+      const mandata = it.mandata ?? getMandataPerItem(it.menuItem)
       return {
         order_id: orderId,
         item_id: it.menuItem.id,
@@ -301,10 +302,10 @@ export function useOrders({ autoload = false } = {}) {
     if (error) throw error
   }, [])
 
-  // Cameriere "Sblocca M4": tutti gli items in mandata 4 (dolci cucina
-  // + caffe'/amari bar) passano da in_attesa a in_preparazione e
-  // diventano subito visibili alle stazioni.
-  const sbloccaMandata4 = useCallback(async (orderId) => {
+  // Cameriere "Invia M4": tutti gli items in mandata 4 (dolci + caffe'
+  // + amari) passano da in_attesa a in_preparazione e diventano subito
+  // visibili al bar (in v5 anche i dolci finiscono al bar quando M4).
+  const inviaM4 = useCallback(async (orderId) => {
     const { error } = await supabase
       .from('order_items')
       .update({
@@ -317,9 +318,9 @@ export function useOrders({ autoload = false } = {}) {
     if (error) throw error
   }, [])
 
-  // Alias retro-compat (v2). Da rimuovere appena tutti i callers passano
-  // alla nuova denominazione.
-  const sbloccaBarMandata2 = sbloccaMandata4
+  // Alias retro-compat v2/v3
+  const sbloccaMandata4    = inviaM4
+  const sbloccaBarMandata2 = inviaM4
 
   // -----------------------------------------------------------
   // PAGAMENTI — storno / conferma cassa
@@ -415,8 +416,9 @@ export function useOrders({ autoload = false } = {}) {
     markMandataInPreparazione,
     markMandataReady,
     markMandataConsegnata,
-    sbloccaMandata4,
-    sbloccaBarMandata2, // retro-compat: alias di sbloccaMandata4
+    inviaM4,
+    sbloccaMandata4,     // alias retro-compat v3
+    sbloccaBarMandata2,  // alias retro-compat v2
     // pagamenti
     stornaOrdine,
     confermaPagamentoCassa,
