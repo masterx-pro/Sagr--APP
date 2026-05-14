@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
+import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
 import OrderCard from '../components/OrderCard.jsx'
 
 /**
  * AdminPage: 4 tab → Ordini, Menu, Riepilogo, Staff.
  */
 export default function AdminPage({ user, onLogout }) {
+  useExitConfirmGuard(onLogout)
   const [tab, setTab] = useState('ordini')
 
   return (
