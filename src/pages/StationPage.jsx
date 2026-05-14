@@ -15,10 +15,10 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
   const [refreshTick, setRefreshTick] = useState(0)
 
   const load = async () => {
-    // Prendiamo ordini non pagati con i loro items
+    // Prendiamo ordini non pagati con i loro items + ordine della portata da menu_items
     const { data, error } = await supabase
       .from('orders')
-      .select('id, numero_tavolo, n_persone, created_at, note, order_items(*)')
+      .select('id, numero_tavolo, n_persone, created_at, note, order_items(*, menu_items(ordine))')
       .neq('stato', 'pagato')
       .order('created_at', { ascending: true })
     if (error) {
@@ -79,6 +79,7 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
                 key={order.id}
                 order={order}
                 items={items}
+                categoria={categoria}
                 onReady={async () => {
                   try {
                     await markTableCategoryReady(order.id, categoria)
@@ -96,18 +97,46 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
   )
 }
 
-function StationCard({ order, items, onReady }) {
+const PORTATE_CUCINA = [
+  { label: 'Antipasti', test: o => o >= 1  && o <= 9  },
+  { label: 'Primi',     test: o => o >= 10 && o <= 19 },
+  { label: 'Secondi',   test: o => o >= 20 && o <= 29 },
+  { label: 'Dolci',     test: o => o >= 30 && o <= 39 },
+]
+
+function groupByPortataCucina(items) {
+  const groups = PORTATE_CUCINA.map(p => ({
+    label: p.label,
+    items: items.filter(i => p.test(i.ordine ?? 0)),
+  }))
+  const altro = items.filter(i => !PORTATE_CUCINA.some(p => p.test(i.ordine ?? 0)))
+  if (altro.length) groups.push({ label: 'Altro', items: altro })
+  return groups.filter(g => g.items.length > 0)
+}
+
+function StationCard({ order, items, categoria, onReady }) {
   const [busy, setBusy] = useState(false)
 
-  // Aggrega le quantità per nome
+  // Aggrega le quantità per nome, mantenendo l'ordine di portata da menu_items
   const aggr = useMemo(() => {
-    const map = new Map()
+    const map = new Map() // nome → { nome, ordine, q }
     for (const it of items) {
-      const k = it.nome_item
-      map.set(k, (map.get(k) || 0) + it.quantita)
+      const ordine = it.menu_items?.ordine ?? 99
+      const cur = map.get(it.nome_item) || { nome: it.nome_item, ordine, q: 0 }
+      cur.q += it.quantita
+      map.set(it.nome_item, cur)
     }
-    return Array.from(map.entries())
+    return Array.from(map.values())
   }, [items])
+
+  const renderRiga = ({ nome, q }) => (
+    <li key={nome} className="flex items-start justify-between gap-3 text-xl">
+      <span className="font-semibold flex-1 min-w-0 break-words whitespace-normal">
+        {nome}
+      </span>
+      <span className="font-bold text-2xl shrink-0">× {q}</span>
+    </li>
+  )
 
   return (
     <li className="card">
@@ -127,14 +156,20 @@ function StationCard({ order, items, onReady }) {
       )}
 
       <ul className="space-y-1 mb-3">
-        {aggr.map(([nome, q]) => (
-          <li key={nome} className="flex items-start justify-between gap-3 text-xl">
-            <span className="font-semibold flex-1 min-w-0 break-words whitespace-normal">
-              {nome}
-            </span>
-            <span className="font-bold text-2xl shrink-0">× {q}</span>
-          </li>
-        ))}
+        {categoria === 'cucina'
+          ? groupByPortataCucina(aggr).flatMap(g => [
+              <li
+                key={`hdr-${g.label}`}
+                className="flex items-center gap-2 text-xs font-bold uppercase
+                           tracking-widest text-cucina mt-2 first:mt-0 select-none"
+              >
+                <span className="flex-1 h-px bg-cucina/40" aria-hidden="true" />
+                <span>— {g.label} —</span>
+                <span className="flex-1 h-px bg-cucina/40" aria-hidden="true" />
+              </li>,
+              ...g.items.map(renderRiga),
+            ])
+          : aggr.map(renderRiga)}
       </ul>
 
       <button
