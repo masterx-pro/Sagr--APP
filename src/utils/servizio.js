@@ -151,3 +151,85 @@ export function getTimerMandata(portataCorrente, impostazioni) {
 export function getTimerMandateMinuti(impostazioni) {
   return leggiMin(impostazioni, 'tempo_timer_mandate_min', 10)
 }
+
+// =============================================================
+// FASCE ORARIE (v4)
+// =============================================================
+//
+// 4 fasce configurabili: colazione, pranzo, aperitivo, cena.
+// Ogni fascia ha 3 chiavi nelle impostazioni:
+//   fascia_<nome>_attiva  ('true'|'false')
+//   fascia_<nome>_inizio  ('HH:MM')
+//   fascia_<nome>_fine    ('HH:MM')  // puo' essere < inizio se attraversa mezzanotte
+//
+// Nota: orders.servizio resta 'pranzo'|'cena' (vedi getServizioAttuale)
+// per compat con i filtri esistenti. Le fasce nuove sono solo UI.
+
+export const FASCE_ORARIE = ['colazione', 'pranzo', 'aperitivo', 'cena']
+
+const FASCE_DEFAULT = {
+  colazione: { attiva: false, inizio: '07:00', fine: '10:30' },
+  pranzo:    { attiva: true,  inizio: '11:00', fine: '16:00' },
+  aperitivo: { attiva: false, inizio: '17:00', fine: '19:00' },
+  cena:      { attiva: true,  inizio: '18:00', fine: '02:00' },
+}
+
+// Estrae { attiva, inizio, fine } per una fascia, con fallback ai default.
+export function getConfigFascia(impostazioni, nome) {
+  const def = FASCE_DEFAULT[nome] || { attiva: false, inizio: '00:00', fine: '00:00' }
+  const attivaRaw = impostazioni?.[`fascia_${nome}_attiva`]
+  const inizio    = impostazioni?.[`fascia_${nome}_inizio`] || def.inizio
+  const fine      = impostazioni?.[`fascia_${nome}_fine`]   || def.fine
+  const attiva    = attivaRaw == null ? def.attiva : attivaRaw === 'true'
+  return { attiva, inizio, fine }
+}
+
+// Converte 'HH:MM' in minuti totali dalle 00:00 (0..1439).
+function hhmmToMin(s) {
+  if (!s || typeof s !== 'string') return NaN
+  const m = s.match(/^(\d{1,2}):(\d{2})$/)
+  if (!m) return NaN
+  const h = parseInt(m[1], 10)
+  const mm = parseInt(m[2], 10)
+  if (!Number.isFinite(h) || !Number.isFinite(mm)) return NaN
+  return h * 60 + mm
+}
+
+// Verifica se un minuto-del-giorno e' dentro [inizio, fine], gestendo
+// il caso in cui fine < inizio (fascia che attraversa mezzanotte).
+function minutoInIntervallo(now, inizio, fine) {
+  if (!Number.isFinite(inizio) || !Number.isFinite(fine)) return false
+  if (fine === inizio) return false
+  if (fine > inizio) {
+    return now >= inizio && now < fine
+  }
+  // fine < inizio: attraversa mezzanotte
+  return now >= inizio || now < fine
+}
+
+// Restituisce il nome della fascia oraria attiva ('colazione'|'pranzo'|
+// 'aperitivo'|'cena'), oppure null se nessuna e' attiva o se l'ora
+// corrente non rientra in nessuna fascia.
+// Priorita' in caso di sovrapposizione: colazione > pranzo > aperitivo > cena.
+export function getFasciaOrariaAttuale(impostazioni, now = new Date()) {
+  const nowMin = now.getHours() * 60 + now.getMinutes()
+  for (const nome of FASCE_ORARIE) {
+    const cfg = getConfigFascia(impostazioni, nome)
+    if (!cfg.attiva) continue
+    const ini = hhmmToMin(cfg.inizio)
+    const fin = hhmmToMin(cfg.fine)
+    if (minutoInIntervallo(nowMin, ini, fin)) return nome
+  }
+  return null
+}
+
+// Label visuale di una fascia.
+export function fasciaLabel(nome) {
+  switch (nome) {
+    case 'colazione': return '🌅 COLAZIONE'
+    case 'pranzo':    return '🌞 PRANZO'
+    case 'aperitivo': return '🥂 APERITIVO'
+    case 'cena':      return '🌙 CENA'
+    default:          return '⏸️ PAUSA'
+  }
+}

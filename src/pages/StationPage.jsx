@@ -126,7 +126,7 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
           <p className="text-xs opacity-90 truncate">{user.nome}</p>
         </div>
         <div className="flex items-center gap-2">
-          <ServizioBadge />
+          <ServizioBadge impostazioni={impostazioni} />
           <button
             onClick={onLogout}
             className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"

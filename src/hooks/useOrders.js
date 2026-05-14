@@ -95,10 +95,15 @@ export function useOrders({ autoload = false } = {}) {
   }, [])
 
   const saveImpostazione = useCallback(async (chiave, valore) => {
+    // UPSERT: crea la riga se non esiste, altrimenti aggiorna.
+    // Robusto anche se la migration non e' stata eseguita (le chiavi
+    // nuove vengono create al primo salvataggio dall'admin).
     const { error } = await supabase
       .from('impostazioni')
-      .update({ valore: String(valore), updated_at: new Date().toISOString() })
-      .eq('chiave', chiave)
+      .upsert(
+        { chiave, valore: String(valore), updated_at: new Date().toISOString() },
+        { onConflict: 'chiave' }
+      )
     if (error) throw error
   }, [])
 

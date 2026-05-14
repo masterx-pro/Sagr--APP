@@ -83,8 +83,11 @@ export default function CamerierePage({ user, onLogout }) {
     orders, fetchOrdiniAttivi,
     createOrder, addItemsToOrder,
     markMandataConsegnata, sbloccaMandata4,
-    stornaOrdine,
+    stornaOrdine, fetchImpostazioni,
   } = useOrders()
+
+  const [impostazioni, setImpostazioni] = useState({})
+  useEffect(() => { fetchImpostazioni().then(setImpostazioni).catch(() => {}) }, [fetchImpostazioni])
 
   const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
   const refetchOrders = useCallback(
@@ -213,6 +216,7 @@ export default function CamerierePage({ user, onLogout }) {
         nome={user.nome}
         ruolo="Cameriere"
         onLogout={onLogout}
+        impostazioni={impostazioni}
         soundEnabled={soundEnabled}
         onToggleSound={() => {
           if (!soundEnabled) {
@@ -315,7 +319,7 @@ export default function CamerierePage({ user, onLogout }) {
 
 // -------------------- Header --------------------
 
-function Header({ color, nome, ruolo, onLogout, leftAction, soundEnabled, onToggleSound }) {
+function Header({ color, nome, ruolo, onLogout, leftAction, soundEnabled, onToggleSound, impostazioni }) {
   return (
     <header className={`${color} px-4 py-3 flex items-center justify-between gap-2
                         sticky top-0 z-30 mobile-landscape:py-2`}>
@@ -327,7 +331,7 @@ function Header({ color, nome, ruolo, onLogout, leftAction, soundEnabled, onTogg
         </div>
       </div>
       <div className="flex items-center gap-2">
-        <ServizioBadge />
+        <ServizioBadge impostazioni={impostazioni} />
         {onToggleSound && (
           <button
             onClick={onToggleSound}

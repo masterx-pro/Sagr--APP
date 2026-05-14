@@ -14,12 +14,14 @@ import ServizioBadge from '../components/ServizioBadge.jsx'
 export default function CassaPage({ user, onLogout }) {
   useExitConfirmGuard(onLogout)
 
-  const { orders, fetchCassaQueue, confermaPagamentoCassa } = useOrders()
+  const { orders, fetchCassaQueue, confermaPagamentoCassa, fetchImpostazioni } = useOrders()
   const [view, setView] = useState('list') // 'list' | 'detail'
   const [selectedId, setSelectedId] = useState(null)
   const [search, setSearch] = useState('')
+  const [impostazioni, setImpostazioni] = useState({})
 
   useEffect(() => { fetchCassaQueue() }, [fetchCassaQueue])
+  useEffect(() => { fetchImpostazioni().then(setImpostazioni).catch(() => {}) }, [fetchImpostazioni])
 
   useEffect(() => {
     const channel = supabase
@@ -74,7 +76,7 @@ export default function CassaPage({ user, onLogout }) {
           </div>
         </div>
         <div className="flex items-center gap-2">
-          <ServizioBadge />
+          <ServizioBadge impostazioni={impostazioni} />
           <button
             onClick={onLogout}
             className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"

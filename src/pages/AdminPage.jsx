@@ -24,7 +24,14 @@ const STATO_LABEL_BREVE = {
 export default function AdminPage({ user, onLogout }) {
   useExitConfirmGuard(onLogout)
   const [tab, setTab] = useState('ordini')
+  const [impostazioni, setImpostazioni] = useState({})
+  const { fetchImpostazioni } = useOrders()
 
+  useEffect(() => {
+    fetchImpostazioni().then(setImpostazioni).catch(() => {})
+  }, [fetchImpostazioni])
+
+  // Servizio "interno" (pranzo/cena) per filtri ordini: resta basato su getHours.
   const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
   useEffect(() => {
     const interval = setInterval(() => {
@@ -43,7 +50,7 @@ export default function AdminPage({ user, onLogout }) {
           <p className="text-xs opacity-90 truncate mobile-landscape:hidden">{user.nome}</p>
         </div>
         <div className="flex items-center gap-2">
-          <ServizioBadge />
+          <ServizioBadge impostazioni={impostazioni} />
           <button
             onClick={onLogout}
             className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
@@ -60,7 +67,7 @@ export default function AdminPage({ user, onLogout }) {
         <TabBtn active={tab === 'menu'}         onClick={() => setTab('menu')}>Menu</TabBtn>
         <TabBtn active={tab === 'riepilogo'}    onClick={() => setTab('riepilogo')}>Riepilogo</TabBtn>
         <TabBtn active={tab === 'staff'}        onClick={() => setTab('staff')}>Staff</TabBtn>
-        <TabBtn active={tab === 'impostazioni'} onClick={() => setTab('impostazioni')}>Timer</TabBtn>
+        <TabBtn active={tab === 'impostazioni'} onClick={() => setTab('impostazioni')}>⚙️</TabBtn>
       </nav>
 
       <main className="flex-1 p-4 mobile-landscape:p-3">
@@ -683,16 +690,17 @@ function TabStaff() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(false)
   const [reveal, setReveal] = useState({})
+  const [messaggioBenvenuto, setMessaggioBenvenuto] = useState('')
 
   const load = async () => {
     setLoading(true)
-    const { data, error } = await supabase
-      .from('users')
-      .select('id, nome, ruolo, pin')
-      .order('ruolo')
-      .order('nome')
-    if (error) alert('Errore caricamento utenti: ' + error.message)
-    setUsers(data || [])
+    const [usersRes, impRes] = await Promise.all([
+      supabase.from('users').select('id, nome, ruolo, pin').order('ruolo').order('nome'),
+      supabase.from('impostazioni').select('valore').eq('chiave', 'messaggio_benvenuto').maybeSingle(),
+    ])
+    if (usersRes.error) alert('Errore caricamento utenti: ' + usersRes.error.message)
+    setUsers(usersRes.data || [])
+    setMessaggioBenvenuto(impRes.data?.valore || 'Ciao! Sei stato invitato a fare parte dello staff per la nostra sagra.')
     setLoading(false)
   }
   useEffect(() => { load() }, [])
@@ -705,6 +713,22 @@ function TabStaff() {
     const { error } = await supabase.from('users').delete().eq('id', u.id)
     if (error) { alert('Errore: ' + error.message); return }
     load()
+  }
+
+  const invitaWhatsApp = (u) => {
+    const visibile = !!reveal[u.id]
+    if (!visibile) {
+      alert('Prima clicca sull\'occhio 👁 per vedere il PIN, poi invia l\'invito.')
+      return
+    }
+    const linkApp = 'https://sagra-app-coral.vercel.app'
+    const testo =
+      `${messaggioBenvenuto}\n\n` +
+      `🔗 Link app: ${linkApp}\n` +
+      `🔑 Il tuo PIN: ${u.pin}\n` +
+      `👤 Ruolo: ${u.ruolo}`
+    const url = 'https://wa.me/?text=' + encodeURIComponent(testo)
+    window.open(url, '_blank', 'noopener,noreferrer')
   }
 
   return (
@@ -757,6 +781,16 @@ function TabStaff() {
                   className="px-3 py-2 rounded-xl text-sm font-semibold bg-pannello border border-bordo"
                 >
                   {visible ? '🙈' : '👁'}
+                </button>
+                <button
+                  onClick={() => invitaWhatsApp(u)}
+                  aria-label="Invita su WhatsApp"
+                  title={visible ? 'Invita su WhatsApp' : 'Mostra prima il PIN'}
+                  className={`px-3 py-2 rounded-xl text-sm font-semibold ${
+                    visible ? 'bg-emerald-700 text-white' : 'bg-pannello border border-bordo opacity-60'
+                  }`}
+                >
+                  📱
                 </button>
                 <button
                   onClick={() => eliminaUtente(u)}
@@ -857,10 +891,10 @@ function FormAggiungiUtente({ users, onAdded }) {
   )
 }
 
-// -------------------- TAB IMPOSTAZIONI (TIMER) --------------------
+// -------------------- TAB IMPOSTAZIONI --------------------
 
-const CHIAVI_IMPOSTAZIONI = [
-  { chiave: 'tempo_timer_mandate_min',        label: 'Timer tra mandate (min) — usato in cucina/bar per evidenziare la mandata successiva' },
+const CHIAVI_TIMER = [
+  { chiave: 'tempo_timer_mandate_min',        label: 'Timer tra mandate (min) — evidenzia la mandata successiva in rosso' },
   { chiave: 'tempo_consegna_min',             label: 'Tempo consegna al tavolo (min)' },
   { chiave: 'tempo_preparazione_cucina_min',  label: 'Tempo preparazione cucina (min)' },
   { chiave: 'tempo_consumo_antipasto_min',    label: 'Consumo antipasti (min)' },
@@ -869,93 +903,394 @@ const CHIAVI_IMPOSTAZIONI = [
   { chiave: 'tempo_consumo_dolce_min',        label: 'Consumo dolci (min)' },
 ]
 
+const FASCE = [
+  { id: 'colazione', label: '🌅 Colazione' },
+  { id: 'pranzo',    label: '🌞 Pranzo'    },
+  { id: 'aperitivo', label: '🥂 Aperitivo' },
+  { id: 'cena',      label: '🌙 Cena'      },
+]
+
 function TabImpostazioni() {
   const { fetchImpostazioni, saveImpostazione } = useOrders()
   const [valori, setValori] = useState({})
   const [originali, setOriginali] = useState({})
   const [loading, setLoading] = useState(false)
-  const [saving, setSaving] = useState(false)
+  const [toast, setToast] = useState(null)
 
   const load = async () => {
     setLoading(true)
     try {
       const map = await fetchImpostazioni()
-      setValori(map)
-      setOriginali(map)
+      setValori(map); setOriginali(map)
     } catch (e) {
       alert('Errore caricamento impostazioni: ' + (e.message || e))
-    } finally {
-      setLoading(false)
-    }
+    } finally { setLoading(false) }
   }
   useEffect(() => { load() }, [])
 
-  const cambiate = CHIAVI_IMPOSTAZIONI.filter(
-    ({ chiave }) => String(valori[chiave] ?? '') !== String(originali[chiave] ?? '')
-  )
+  function showToast(msg, kind = 'success') {
+    setToast({ msg, kind })
+    setTimeout(() => setToast(null), 3500)
+  }
 
-  const salva = async () => {
-    setSaving(true)
+  // Salva una lista di chiavi se cambiate, e ricarica.
+  async function salvaChiavi(chiavi, etichetta) {
     try {
-      for (const { chiave } of cambiate) {
-        const v = String(valori[chiave] ?? '').trim()
-        const n = parseInt(v, 10)
-        if (!Number.isFinite(n) || n < 0) {
-          alert(`Valore non valido per ${chiave}`)
-          setSaving(false)
-          return
+      let n = 0
+      for (const c of chiavi) {
+        if (String(valori[c] ?? '') !== String(originali[c] ?? '')) {
+          await saveImpostazione(c, valori[c] ?? '')
+          n++
         }
-        await saveImpostazione(chiave, n)
       }
       await load()
+      showToast(n > 0 ? `✅ ${etichetta} salvate (${n})` : 'Nessuna modifica da salvare')
     } catch (e) {
       alert('Errore salvataggio: ' + (e.message || e))
-    } finally {
-      setSaving(false)
     }
   }
 
   return (
-    <div className="space-y-3 pb-6">
-      <div className="card bg-blue-900/20 border border-blue-700">
-        <p className="font-bold mb-1">Timer mandate</p>
-        <p className="text-sm opacity-80">
-          Quando la cucina marca pronta una mandata, parte un timer prima che la successiva
-          diventi urgente (bordo rosso). Formula:
-        </p>
-        <p className="text-sm font-mono mt-1 opacity-90">
-          timer = consegna + consumo_portata + preparazione_cucina
-        </p>
-      </div>
-
+    <div className="space-y-6 pb-6">
       {loading ? (
         <p className="text-center opacity-60 py-8">Caricamento…</p>
       ) : (
         <>
-          {CHIAVI_IMPOSTAZIONI.map(({ chiave, label }) => (
-            <label key={chiave} className="block card">
-              <span className="text-sm opacity-80">{label}</span>
-              <input
-                type="number" inputMode="numeric" min="0"
-                value={valori[chiave] ?? ''}
-                onChange={e => setValori(v => ({ ...v, [chiave]: e.target.value }))}
-                className="input-base mt-1"
-              />
-            </label>
-          ))}
+          <SezioneFasce
+            valori={valori}
+            originali={originali}
+            setValori={setValori}
+            onSalva={() => {
+              const chiavi = FASCE.flatMap(f => [
+                `fascia_${f.id}_attiva`,
+                `fascia_${f.id}_inizio`,
+                `fascia_${f.id}_fine`,
+              ])
+              salvaChiavi(chiavi, 'fasce orarie')
+            }}
+          />
 
-          <button
-            onClick={salva}
-            disabled={saving || cambiate.length === 0}
-            className="btn-success w-full text-lg"
-          >
-            {saving
-              ? 'Salvataggio…'
-              : cambiate.length === 0
-                ? 'Nessuna modifica'
-                : `Salva ${cambiate.length} modific${cambiate.length === 1 ? 'a' : 'he'}`}
-          </button>
+          <SezioneTimer
+            valori={valori}
+            setValori={setValori}
+            originali={originali}
+            onSalva={() => salvaChiavi(CHIAVI_TIMER.map(c => c.chiave), 'impostazioni timer')}
+          />
+
+          <SezioneMessaggio
+            valore={valori.messaggio_benvenuto ?? ''}
+            originale={originali.messaggio_benvenuto ?? ''}
+            onChange={v => setValori(s => ({ ...s, messaggio_benvenuto: v }))}
+            onSalva={() => salvaChiavi(['messaggio_benvenuto'], 'messaggio benvenuto')}
+          />
+
+          <SezioneReset onSuccess={(msg) => { showToast(msg); }} />
         </>
+      )}
+
+      {toast && (
+        <div className={`fixed bottom-4 left-4 right-4 z-50 mx-auto max-w-md
+                         rounded-xl px-4 py-3 font-semibold text-center shadow-lg
+                         ${toast.kind === 'success' ? 'bg-green-700 text-white' : 'bg-red-700 text-white'}`}>
+          {toast.msg}
+        </div>
+      )}
+    </div>
+  )
+}
+
+// ------- Sezione FASCE ORARIE -------
+
+function SezioneFasce({ valori, originali, setValori, onSalva }) {
+  const cambiate = FASCE.flatMap(f => [
+    `fascia_${f.id}_attiva`,
+    `fascia_${f.id}_inizio`,
+    `fascia_${f.id}_fine`,
+  ]).filter(k => String(valori[k] ?? '') !== String(originali[k] ?? ''))
+
+  return (
+    <section className="card border-2 border-cameriere/40">
+      <h3 className="font-bold text-lg mb-1">🕐 Fasce orarie servizio</h3>
+      <p className="text-xs opacity-70 mb-3">
+        Determinano il badge in alto a destra. Se nessuna fascia copre l'ora corrente,
+        l'app mostra "⏸️ PAUSA".
+      </p>
+      <div className="space-y-3">
+        {FASCE.map(f => {
+          const attivaKey = `fascia_${f.id}_attiva`
+          const inizioKey = `fascia_${f.id}_inizio`
+          const fineKey   = `fascia_${f.id}_fine`
+          const attiva = valori[attivaKey] === 'true'
+          return (
+            <div key={f.id}
+                 className={`rounded-xl border p-3 ${
+                   attiva ? 'border-cameriere/40 bg-pannello' : 'border-bordo bg-pannello/30 opacity-60'
+                 }`}>
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <span className="font-semibold">{f.label}</span>
+                <label className="flex items-center gap-2 text-sm cursor-pointer">
+                  <input
+                    type="checkbox"
+                    checked={attiva}
+                    onChange={e => setValori(s => ({ ...s, [attivaKey]: e.target.checked ? 'true' : 'false' }))}
+                  />
+                  Attiva
+                </label>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mt-2">
+                <label className="block">
+                  <span className="text-xs opacity-80">Inizio</span>
+                  <input
+                    type="time"
+                    value={valori[inizioKey] ?? ''}
+                    onChange={e => setValori(s => ({ ...s, [inizioKey]: e.target.value }))}
+                    disabled={!attiva}
+                    className="input-base mt-1"
+                  />
+                </label>
+                <label className="block">
+                  <span className="text-xs opacity-80">Fine</span>
+                  <input
+                    type="time"
+                    value={valori[fineKey] ?? ''}
+                    onChange={e => setValori(s => ({ ...s, [fineKey]: e.target.value }))}
+                    disabled={!attiva}
+                    className="input-base mt-1"
+                  />
+                </label>
+              </div>
+            </div>
+          )
+        })}
+      </div>
+      <button
+        onClick={onSalva}
+        disabled={cambiate.length === 0}
+        className="btn-success w-full mt-4"
+      >
+        {cambiate.length === 0 ? 'Nessuna modifica' : `Salva fasce orarie (${cambiate.length})`}
+      </button>
+    </section>
+  )
+}
+
+// ------- Sezione TIMER E TEMPI -------
+
+function SezioneTimer({ valori, setValori, originali, onSalva }) {
+  const cambiate = CHIAVI_TIMER.filter(
+    ({ chiave }) => String(valori[chiave] ?? '') !== String(originali[chiave] ?? '')
+  )
+  return (
+    <section className="card border-2 border-bar/40">
+      <h3 className="font-bold text-lg mb-1">⏱️ Timer e tempi</h3>
+      <p className="text-xs opacity-70 mb-3">
+        Valori in minuti. Il timer tra mandate (riga 1) e' quello principale usato in cucina/bar.
+      </p>
+      <div className="space-y-2">
+        {CHIAVI_TIMER.map(({ chiave, label }) => (
+          <label key={chiave} className="block">
+            <span className="text-sm opacity-80">{label}</span>
+            <input
+              type="number" inputMode="numeric" min="0"
+              value={valori[chiave] ?? ''}
+              onChange={e => setValori(v => ({ ...v, [chiave]: e.target.value }))}
+              className="input-base mt-1"
+            />
+          </label>
+        ))}
+      </div>
+      <button
+        onClick={onSalva}
+        disabled={cambiate.length === 0}
+        className="btn-success w-full mt-4"
+      >
+        {cambiate.length === 0 ? 'Nessuna modifica' : `Salva timer (${cambiate.length})`}
+      </button>
+    </section>
+  )
+}
+
+// ------- Sezione MESSAGGIO BENVENUTO -------
+
+function SezioneMessaggio({ valore, originale, onChange, onSalva }) {
+  const cambiato = String(valore ?? '') !== String(originale ?? '')
+  return (
+    <section className="card border-2 border-emerald-700/40">
+      <h3 className="font-bold text-lg mb-1">💬 Messaggio di benvenuto staff</h3>
+      <p className="text-xs opacity-70 mb-3">
+        Usato dall'invito WhatsApp nella tab Staff. Il link app e il PIN
+        vengono aggiunti automaticamente in coda al messaggio.
+      </p>
+      <textarea
+        rows={5}
+        value={valore}
+        onChange={e => onChange(e.target.value)}
+        className="input-base w-full"
+        placeholder="Ciao! Sei stato invitato a fare parte dello staff per la nostra sagra. Accedi all'app usando il link e il tuo PIN personale. Buon lavoro! 🎪"
+      />
+      <button
+        onClick={onSalva}
+        disabled={!cambiato}
+        className="btn-success w-full mt-3"
+      >
+        {cambiato ? 'Salva messaggio' : 'Nessuna modifica'}
+      </button>
+    </section>
+  )
+}
+
+// ------- Sezione RESET E MANUTENZIONE -------
+
+function SezioneReset({ onSuccess }) {
+  return (
+    <section className="card border-2 border-red-700 bg-red-950/30">
+      <h3 className="font-bold text-lg text-red-300 mb-1">⚠️ Reset e manutenzione</h3>
+      <p className="text-xs opacity-80 mb-4">
+        Usa questi pulsanti per azzerare i dati tra una festa e l'altra.
+        <strong> Le operazioni sono irreversibili.</strong>
+      </p>
+
+      <div className="space-y-3">
+        <BottoneReset
+          etichetta="🗑️ Azzera tutti gli ordini"
+          descrizione="Elimina ordini e voci. Menu e staff restano."
+          confermaTesto="CONFERMO"
+          esegui={async () => {
+            const { error: e1 } = await supabase
+              .from('order_items').delete()
+              .neq('id', '00000000-0000-0000-0000-000000000000')
+            if (e1) throw e1
+            const { error: e2 } = await supabase
+              .from('orders').delete()
+              .neq('id', '00000000-0000-0000-0000-000000000000')
+            if (e2) throw e2
+          }}
+          onDone={() => onSuccess('✅ Tutti gli ordini eliminati')}
+        />
+
+        <BottoneReset
+          etichetta="🗑️ Azzera menu cucina"
+          descrizione="Elimina tutte le voci di menu con categoria=cucina."
+          confermaTesto="CONFERMO"
+          esegui={async () => {
+            const { error } = await supabase
+              .from('menu_items').delete().eq('categoria', 'cucina')
+            if (error) throw error
+          }}
+          onDone={() => onSuccess('✅ Menu cucina eliminato')}
+        />
+
+        <BottoneReset
+          etichetta="🗑️ Azzera menu bar"
+          descrizione="Elimina tutte le voci di menu con categoria=bar."
+          confermaTesto="CONFERMO"
+          esegui={async () => {
+            const { error } = await supabase
+              .from('menu_items').delete().eq('categoria', 'bar')
+            if (error) throw error
+          }}
+          onDone={() => onSuccess('✅ Menu bar eliminato')}
+        />
+
+        <BottoneReset
+          etichetta="🗑️ Reset completo"
+          descrizione="Elimina ordini, voci e menu. Mantiene staff e impostazioni."
+          confermaTesto="RESET COMPLETO"
+          esegui={async () => {
+            const { error: e1 } = await supabase
+              .from('order_items').delete()
+              .neq('id', '00000000-0000-0000-0000-000000000000')
+            if (e1) throw e1
+            const { error: e2 } = await supabase
+              .from('orders').delete()
+              .neq('id', '00000000-0000-0000-0000-000000000000')
+            if (e2) throw e2
+            const { error: e3 } = await supabase
+              .from('menu_items').delete()
+              .neq('id', '00000000-0000-0000-0000-000000000000')
+            if (e3) throw e3
+          }}
+          onDone={() => onSuccess('✅ Reset completo eseguito — app pronta per nuova festa')}
+        />
+      </div>
+    </section>
+  )
+}
+
+// Pulsante reset con flusso a step:
+//   0 = pulsante iniziale (ETICHETTA, click -> step 1)
+//   1 = dialog conferma (window.confirm) -> step 2 oppure 0
+//   2 = input "CONFERMO" -> bottone esegui sbloccato
+function BottoneReset({ etichetta, descrizione, confermaTesto, esegui, onDone }) {
+  const [step, setStep] = useState(0)
+  const [input, setInput] = useState('')
+  const [busy, setBusy] = useState(false)
+
+  const startConferma = () => {
+    const ok = window.confirm(
+      `${etichetta}\n\nSei sicuro? L'operazione e' irreversibile.\n\nPremi OK per passare alla conferma finale.`
+    )
+    if (ok) setStep(2)
+  }
+
+  const eseguiNow = async () => {
+    if (input.trim().toUpperCase() !== confermaTesto.toUpperCase()) return
+    setBusy(true)
+    try {
+      await esegui()
+      onDone()
+      setStep(0); setInput('')
+    } catch (e) {
+      alert('Errore: ' + (e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-red-700 bg-red-950/30 p-3">
+      <p className="font-bold text-red-200 text-sm">{etichetta}</p>
+      <p className="text-xs opacity-80 mb-2">{descrizione}</p>
+
+      {step === 0 && (
+        <button
+          onClick={startConferma}
+          className="w-full rounded-xl bg-red-700 text-white font-bold py-2 active:scale-95"
+        >
+          Avvia
+        </button>
+      )}
+
+      {step === 2 && (
+        <div className="space-y-2">
+          <p className="text-xs">
+            Per confermare, scrivi <strong className="font-mono">{confermaTesto}</strong> qui sotto:
+          </p>
+          <input
+            type="text"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder={confermaTesto}
+            className="input-base"
+            autoFocus
+          />
+          <div className="grid grid-cols-2 gap-2">
+            <button
+              onClick={() => { setStep(0); setInput('') }}
+              disabled={busy}
+              className="btn-neutral"
+            >
+              Annulla
+            </button>
+            <button
+              onClick={eseguiNow}
+              disabled={busy || input.trim().toUpperCase() !== confermaTesto.toUpperCase()}
+              className="rounded-xl bg-red-700 text-white font-bold py-2 disabled:opacity-40 active:scale-95"
+            >
+              {busy ? 'In corso…' : 'Esegui ora'}
+            </button>
+          </div>
+        </div>
       )}
     </div>
   )
