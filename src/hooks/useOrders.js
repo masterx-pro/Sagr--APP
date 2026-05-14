@@ -33,6 +33,26 @@ export function useOrders({ autoload = false } = {}) {
     return data || []
   }, [])
 
+  // Tutti gli ordini pagati (cronologico crescente, vecchi → nuovi).
+  // Usato dal cameriere ora che ogni ordine è pagato all'invio.
+  const fetchPaidOrders = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*, order_items(*)')
+      .eq('stato', 'pagato')
+      .order('created_at', { ascending: true })
+    if (error) {
+      setError(error.message)
+      setOrders([])
+    } else {
+      setOrders(data || [])
+    }
+    setLoading(false)
+    return data || []
+  }, [])
+
   const fetchAllOrders = useCallback(async () => {
     setLoading(true)
     const { data, error } = await supabase
@@ -58,7 +78,9 @@ export function useOrders({ autoload = false } = {}) {
         numero_tavolo: tavolo,
         n_persone: persone,
         totale,
-        note
+        note,
+        stato: 'pagato',
+        pagato_at: new Date().toISOString()
       })
       .select()
       .single()
@@ -179,6 +201,7 @@ export function useOrders({ autoload = false } = {}) {
     loading,
     error,
     fetchOpenOrders,
+    fetchPaidOrders,
     fetchAllOrders,
     createOrder,
     addItemsToOrder,

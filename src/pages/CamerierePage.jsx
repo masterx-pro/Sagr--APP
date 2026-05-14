@@ -15,10 +15,11 @@ export default function CamerierePage({ user, onLogout }) {
   const [menuLoading, setMenuLoading] = useState(false)
 
   const {
-    orders, fetchOpenOrders,
-    createOrder, addItemsToOrder,
-    markOrderPaid
-  } = useOrders({ autoload: true })
+    orders, fetchPaidOrders,
+    createOrder, addItemsToOrder
+  } = useOrders()
+
+  useEffect(() => { fetchPaidOrders() }, [fetchPaidOrders])
 
   // Carica menu fresco da Supabase (no cache)
   const loadMenu = useCallback(async () => {
@@ -44,9 +45,9 @@ export default function CamerierePage({ user, onLogout }) {
     const channel = supabase
       .channel('cameriere-feed')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' },
-        () => fetchOpenOrders())
+        () => fetchPaidOrders())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' },
-        () => fetchOpenOrders())
+        () => fetchPaidOrders())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [fetchOpenOrders])
@@ -129,7 +130,7 @@ export default function CamerierePage({ user, onLogout }) {
             refreshing={menuLoading}
             onCreate={async (tavolo, persone, items, note) => {
               await createOrder(tavolo, persone, items, note)
-              await fetchOpenOrders()
+              await fetchPaidOrders()
               setView('list')
             }}
           />
@@ -140,13 +141,7 @@ export default function CamerierePage({ user, onLogout }) {
             menu={menu}
             onAddItems={async (items) => {
               await addItemsToOrder(selectedId, items)
-              await fetchOpenOrders()
-            }}
-            onPaid={async () => {
-              await markOrderPaid(selectedId)
-              await fetchOpenOrders()
-              setView('list')
-              setSelectedId(null)
+              await fetchPaidOrders()
             }}
           />
         )}
@@ -181,27 +176,57 @@ function Header({ color, nome, ruolo, onLogout, leftAction }) {
 // -------------------- Vista 1: Lista Tavoli --------------------
 
 function ListaTavoli({ orders, onNew, onSelect }) {
+  const inPreparazione = orders.filter(o => {
+    const items = o.order_items || []
+    return items.length === 0 || !items.every(i => i.pronto)
+  })
+  const consegnati = orders.filter(o => {
+    const items = o.order_items || []
+    return items.length > 0 && items.every(i => i.pronto)
+  })
+
   return (
-    <div className="space-y-3">
+    <div className="space-y-6">
       <button onClick={onNew} className="btn-primary w-full text-lg">
         + Nuovo Tavolo
       </button>
 
-      {orders.length === 0 && (
-        <p className="text-center opacity-60 py-8">Nessun tavolo aperto</p>
-      )}
+      <SezioneOrdini
+        titolo="🍳 In preparazione"
+        orders={inPreparazione}
+        onSelect={onSelect}
+      />
+      <SezioneOrdini
+        titolo="✅ Consegnati"
+        orders={consegnati}
+        onSelect={onSelect}
+      />
+    </div>
+  )
+}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
-                      mobile-landscape:grid-cols-2 gap-3">
-        {orders.map(o => (
-          <OrderCard
-            key={o.id}
-            order={o}
-            items={o.order_items || []}
-            onClick={() => onSelect(o.id)}
-          />
-        ))}
-      </div>
+function SezioneOrdini({ titolo, orders, onSelect }) {
+  return (
+    <div>
+      <h3 className="font-bold mb-2 text-lg">
+        {titolo}{' '}
+        <span className="text-sm font-normal opacity-60">({orders.length})</span>
+      </h3>
+      {orders.length === 0 ? (
+        <p className="opacity-60 text-sm">Nessun ordine</p>
+      ) : (
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
+                        mobile-landscape:grid-cols-2 gap-3">
+          {orders.map(o => (
+            <OrderCard
+              key={o.id}
+              order={o}
+              items={o.order_items || []}
+              onClick={() => onSelect(o.id)}
+            />
+          ))}
+        </div>
+      )}
     </div>
   )
 }
@@ -232,6 +257,10 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
 
   const submit = async () => {
     if (!canSubmit) return
+    const ok = window.confirm(
+      `Pagamento ricevuto: € ${totale.toFixed(2)} — Confermi?`
+    )
+    if (!ok) return
     setSubmitting(true)
     try {
       await onCreate(
@@ -326,7 +355,7 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
 
 // -------------------- Vista 3: Dettaglio Ordine --------------------
 
-function DettaglioOrdine({ orderId, menu, onAddItems, onPaid }) {
+function DettaglioOrdine({ orderId, menu, onAddItems }) {
   const [order, setOrder] = useState(null)
   const [adding, setAdding] = useState(false)
   const [qty, setQty] = useState({})
@@ -361,7 +390,6 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onPaid }) {
   }
 
   const items = order.order_items || []
-  const tuttoPronto = items.length > 0 && items.every(i => i.pronto)
 
   if (adding) {
     const itemsArr = Object.entries(qty)
@@ -437,25 +465,12 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onPaid }) {
       <Sezione titolo="Cucina" items={cucinaItems} colore="text-cucina" />
       <Sezione titolo="Bar"    items={barItems}    colore="text-bar" />
 
-      <div className="grid grid-cols-2 gap-2">
-        <button
-          disabled={order.stato === 'pagato'}
-          onClick={() => setAdding(true)}
-          className="btn-neutral"
-        >
-          + Aggiungi item
-        </button>
-        <button
-          disabled={!tuttoPronto || order.stato === 'pagato' || busy}
-          onClick={async () => {
-            setBusy(true)
-            try { await onPaid() } finally { setBusy(false) }
-          }}
-          className="btn-success"
-        >
-          {order.stato === 'pagato' ? 'Pagato' : 'Segna come Pagato'}
-        </button>
-      </div>
+      <button
+        onClick={() => setAdding(true)}
+        className="btn-neutral w-full"
+      >
+        + Aggiungi item
+      </button>
     </div>
   )
 }

@@ -1,5 +1,12 @@
 import TableBadge from './TableBadge.jsx'
 
+function formatDataOra(iso) {
+  const d = new Date(iso)
+  const data = d.toLocaleDateString('it-IT', { day: '2-digit', month: '2-digit' })
+  const ora  = d.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
+  return `${data} · ${ora}`
+}
+
 const STATO_COLORI = {
   aperto:         'bg-gray-600',
   cucina_pronta:  'bg-yellow-600',
@@ -31,7 +38,14 @@ export default function OrderCard({ order, items = [], onClick, onDelete }) {
       className="card cursor-pointer active:scale-[0.98] transition-transform"
     >
       <div className="flex items-start justify-between mb-2 gap-2">
-        <TableBadge numero={order.numero_tavolo} persone={order.n_persone} />
+        <div className="flex flex-col gap-1 min-w-0">
+          <TableBadge numero={order.numero_tavolo} persone={order.n_persone} />
+          {order.created_at && (
+            <span className="text-xs text-gray-400">
+              {formatDataOra(order.created_at)}
+            </span>
+          )}
+        </div>
         <span className={`badge text-white ${STATO_COLORI[order.stato] || 'bg-gray-600'}`}>
           {STATO_LABEL[order.stato] || order.stato}
         </span>
