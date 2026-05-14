@@ -3,6 +3,7 @@ import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
 import OrderCard from '../components/OrderCard.jsx'
+import ServizioBadge from '../components/ServizioBadge.jsx'
 
 /**
  * AdminPage: 4 tab → Ordini, Menu, Riepilogo, Staff.
@@ -19,12 +20,15 @@ export default function AdminPage({ user, onLogout }) {
           <h1 className="font-bold text-lg mobile-landscape:text-base">Admin</h1>
           <p className="text-xs opacity-90 truncate mobile-landscape:hidden">{user.nome}</p>
         </div>
-        <button
-          onClick={onLogout}
-          className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
-        >
-          Esci
-        </button>
+        <div className="flex items-center gap-2">
+          <ServizioBadge />
+          <button
+            onClick={onLogout}
+            className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
+          >
+            Esci
+          </button>
+        </div>
       </header>
 
       <nav className="grid grid-cols-4 gap-1 p-2 bg-pannello border-b border-bordo
@@ -65,6 +69,7 @@ function TabBtn({ active, onClick, children }) {
 
 function TabOrdini() {
   const { orders, fetchAllOrders, deleteOrder } = useOrders()
+  const [filtroServizio, setFiltroServizio] = useState('tutti')
 
   useEffect(() => {
     fetchAllOrders()
@@ -88,21 +93,49 @@ function TabOrdini() {
     }
   }
 
-  if (orders.length === 0) {
-    return <p className="text-center opacity-60 py-8">Nessun ordine</p>
-  }
+  const filtrati = filtroServizio === 'tutti'
+    ? orders
+    : orders.filter(o => o.servizio === filtroServizio)
 
   return (
     <div className="space-y-3">
-      {orders.map(o => (
-        <OrderCard
-          key={o.id}
-          order={o}
-          items={o.order_items || []}
-          onDelete={handleDelete}
-        />
-      ))}
+      <div className="grid grid-cols-3 gap-2">
+        <FiltroBtn active={filtroServizio === 'tutti'}  onClick={() => setFiltroServizio('tutti')}>
+          Tutti ({orders.length})
+        </FiltroBtn>
+        <FiltroBtn active={filtroServizio === 'pranzo'} onClick={() => setFiltroServizio('pranzo')}>
+          🌞 Pranzo ({orders.filter(o => o.servizio === 'pranzo').length})
+        </FiltroBtn>
+        <FiltroBtn active={filtroServizio === 'cena'}   onClick={() => setFiltroServizio('cena')}>
+          🌙 Cena ({orders.filter(o => o.servizio === 'cena').length})
+        </FiltroBtn>
+      </div>
+      {filtrati.length === 0 ? (
+        <p className="text-center opacity-60 py-8">Nessun ordine</p>
+      ) : (
+        filtrati.map(o => (
+          <OrderCard
+            key={o.id}
+            order={o}
+            items={o.order_items || []}
+            onDelete={handleDelete}
+          />
+        ))
+      )}
     </div>
+  )
+}
+
+function FiltroBtn({ active, onClick, children }) {
+  return (
+    <button
+      onClick={onClick}
+      className={`min-h-btn rounded-xl font-semibold text-sm px-2 ${
+        active ? 'bg-admin text-white' : 'bg-pannello border border-bordo'
+      }`}
+    >
+      {children}
+    </button>
   )
 }
 
@@ -421,13 +454,17 @@ function TabRiepilogo() {
   const load = async () => {
     const { data: tutti } = await supabase
       .from('orders')
-      .select('id, numero_tavolo, stato, totale, order_items(nome_item, quantita)')
+      .select('id, numero_tavolo, stato, totale, servizio, order_items(nome_item, quantita)')
 
     if (!tutti) return
 
     const pagati = tutti.filter(o => o.stato === 'pagato')
     const aperti = tutti.filter(o => o.stato !== 'pagato')
-    const incasso = pagati.reduce((s, o) => s + Number(o.totale), 0)
+    const pagatiPranzo = pagati.filter(o => o.servizio === 'pranzo')
+    const pagatiCena   = pagati.filter(o => o.servizio === 'cena')
+    const incasso       = pagati.reduce((s, o) => s + Number(o.totale), 0)
+    const incassoPranzo = pagatiPranzo.reduce((s, o) => s + Number(o.totale), 0)
+    const incassoCena   = pagatiCena.reduce((s, o) => s + Number(o.totale), 0)
     const tavoliServiti = new Set(pagati.map(o => o.numero_tavolo)).size
 
     const conteggio = new Map()
@@ -442,6 +479,8 @@ function TabRiepilogo() {
 
     setStats({
       incasso,
+      incassoPranzo,
+      incassoCena,
       tavoliServiti,
       ordiniAperti: aperti.length,
       top5
@@ -465,9 +504,11 @@ function TabRiepilogo() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
-        <StatCard label="Incasso serata" value={`€ ${stats.incasso.toFixed(2)}`} />
-        <StatCard label="Tavoli serviti" value={stats.tavoliServiti} />
-        <StatCard label="Ordini aperti" value={stats.ordiniAperti} />
+        <StatCard label="🌞 Incasso Pranzo" value={`€ ${stats.incassoPranzo.toFixed(2)}`} />
+        <StatCard label="🌙 Incasso Cena"   value={`€ ${stats.incassoCena.toFixed(2)}`} />
+        <StatCard label="Incasso totale"    value={`€ ${stats.incasso.toFixed(2)}`} />
+        <StatCard label="Tavoli serviti"    value={stats.tavoliServiti} />
+        <StatCard label="Ordini aperti"     value={stats.ordiniAperti} />
       </div>
 
       <div>

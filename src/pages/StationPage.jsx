@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import TableBadge from '../components/TableBadge.jsx'
+import ServizioBadge from '../components/ServizioBadge.jsx'
+import { getServizioAttuale } from '../utils/servizio.js'
 
 /**
  * StationPage: vista comune per Bar e Cucina con due tab:
@@ -41,10 +43,12 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
   const [refreshTick, setRefreshTick] = useState(0)
 
   const load = async () => {
+    // Bar/Cucina vedono SOLO il servizio attuale
+    const servizio = getServizioAttuale()
     const { data, error } = await supabase
       .from('orders')
-      .select('id, numero_tavolo, n_persone, created_at, note, order_items(*, menu_items(ordine))')
-      .neq('stato', 'pagato_archiviato') // tieni tutti tranne eventuali archiviati futuri
+      .select('id, numero_tavolo, n_persone, created_at, note, servizio, turno, order_items(*, menu_items(ordine))')
+      .eq('servizio', servizio)
       .order('created_at', { ascending: true })
     if (error) {
       console.error(error)
@@ -82,12 +86,15 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
           <h1 className="font-bold text-lg mobile-landscape:text-base">{titolo}</h1>
           <p className="text-xs opacity-90 truncate">{user.nome}</p>
         </div>
-        <button
-          onClick={onLogout}
-          className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
-        >
-          Esci
-        </button>
+        <div className="flex items-center gap-2">
+          <ServizioBadge />
+          <button
+            onClick={onLogout}
+            className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
+          >
+            Esci
+          </button>
+        </div>
       </header>
 
       <nav className="grid grid-cols-2 gap-1 p-2 bg-pannello border-b border-bordo

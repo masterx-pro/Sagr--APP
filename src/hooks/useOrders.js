@@ -34,15 +34,17 @@ export function useOrders({ autoload = false } = {}) {
   }, [])
 
   // Tutti gli ordini pagati (cronologico crescente, vecchi → nuovi).
-  // Usato dal cameriere ora che ogni ordine è pagato all'invio.
-  const fetchPaidOrders = useCallback(async () => {
+  // Filtro opzionale per servizio ('pranzo' | 'cena').
+  const fetchPaidOrders = useCallback(async (servizio = null) => {
     setLoading(true)
     setError(null)
-    const { data, error } = await supabase
+    let q = supabase
       .from('orders')
       .select('*, order_items(*)')
       .eq('stato', 'pagato')
       .order('created_at', { ascending: true })
+    if (servizio) q = q.eq('servizio', servizio)
+    const { data, error } = await q
     if (error) {
       setError(error.message)
       setOrders([])
@@ -65,23 +67,28 @@ export function useOrders({ autoload = false } = {}) {
     return data || []
   }, [])
 
-  const createOrder = useCallback(async (tavolo, persone, items, note = null) => {
+  const createOrder = useCallback(async (tavolo, persone, items, note = null, extra = null) => {
     // items: [{ menuItem, quantita }]
+    // extra (opzionale): { servizio, turno } — se omesso, usa i default DB
     const totale = items.reduce(
       (s, it) => s + Number(it.menuItem.prezzo) * it.quantita,
       0
     )
 
+    const insertObj = {
+      numero_tavolo: tavolo,
+      n_persone: persone,
+      totale,
+      note,
+      stato: 'pagato',
+      pagato_at: new Date().toISOString()
+    }
+    if (extra?.servizio) insertObj.servizio = extra.servizio
+    if (extra?.turno != null) insertObj.turno = extra.turno
+
     const { data: order, error: e1 } = await supabase
       .from('orders')
-      .insert({
-        numero_tavolo: tavolo,
-        n_persone: persone,
-        totale,
-        note,
-        stato: 'pagato',
-        pagato_at: new Date().toISOString()
-      })
+      .insert(insertObj)
       .select()
       .single()
 

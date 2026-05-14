@@ -3,6 +3,8 @@ import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import MenuSelector from '../components/MenuSelector.jsx'
 import TableBadge from '../components/TableBadge.jsx'
+import ServizioBadge from '../components/ServizioBadge.jsx'
+import { getServizioAttuale, getDataServizio, dataLocaleToUtcRange } from '../utils/servizio.js'
 
 // -------------------- AUDIO (Web Audio API, niente file esterni) --------------------
 
@@ -96,7 +98,11 @@ export default function CamerierePage({ user, onLogout }) {
     createOrder, addItemsToOrder
   } = useOrders()
 
-  useEffect(() => { fetchPaidOrders() }, [fetchPaidOrders])
+  const refetchOrders = useCallback(
+    () => fetchPaidOrders(getServizioAttuale()),
+    [fetchPaidOrders]
+  )
+  useEffect(() => { refetchOrders() }, [refetchOrders])
 
   const loadMenu = useCallback(async () => {
     setMenuLoading(true)
@@ -114,12 +120,12 @@ export default function CamerierePage({ user, onLogout }) {
     const channel = supabase
       .channel('cameriere-feed')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' },
-        () => fetchPaidOrders())
+        () => refetchOrders())
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' },
-        () => fetchPaidOrders())
+        () => refetchOrders())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [fetchPaidOrders])
+  }, [refetchOrders])
 
   // Notifica sonora quando un ordine diventa verde (transizione)
   const lastReadyRef = useRef(null) // Set<id>
@@ -228,9 +234,9 @@ export default function CamerierePage({ user, onLogout }) {
             menu={menu}
             onRefresh={loadMenu}
             refreshing={menuLoading}
-            onCreate={async (tavolo, persone, items, note) => {
-              await createOrder(tavolo, persone, items, note)
-              await fetchPaidOrders()
+            onCreate={async (tavolo, persone, items, note, extra) => {
+              await createOrder(tavolo, persone, items, note, extra)
+              await refetchOrders()
               setView('list')
             }}
           />
@@ -242,7 +248,7 @@ export default function CamerierePage({ user, onLogout }) {
             initialAdding={addingForId === selectedId}
             onAddItems={async (items) => {
               await addItemsToOrder(selectedId, items)
-              await fetchPaidOrders()
+              await refetchOrders()
             }}
           />
         )}
@@ -265,6 +271,7 @@ function Header({ color, nome, ruolo, onLogout, leftAction, soundEnabled, onTogg
         </div>
       </div>
       <div className="flex items-center gap-2">
+        <ServizioBadge />
         {onToggleSound && (
           <button
             onClick={onToggleSound}
@@ -437,6 +444,12 @@ function CompactOrderCard({ order, consegnato = false,
 
       <div className="flex items-center gap-3 flex-wrap pr-10">
         <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="md" />
+        {order.turno >= 2 && (
+          <span className="text-sm font-bold text-yellow-300 px-2 py-0.5
+                           rounded bg-yellow-900/40 border border-yellow-700">
+            T{order.turno}
+          </span>
+        )}
         <span className="text-sm opacity-80">{order.n_persone} pers.</span>
         <span className="text-base">
           🍳{cucOk ? '✅' : '⏳'} 🍺{barOk ? '✅' : '⏳'}
@@ -478,6 +491,7 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
   const [note, setNote] = useState('')
   const [qty, setQty] = useState({})
   const [submitting, setSubmitting] = useState(false)
+  const tavoloRef = useRef(null)
 
   const itemsArr = useMemo(() => {
     return Object.entries(qty)
@@ -496,15 +510,54 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
 
   const submit = async () => {
     if (!canSubmit) return
+    const numTavolo = parseInt(tavolo, 10)
+    const servizio = getServizioAttuale()
+    const dataLocale = getDataServizio()
+
+    // 1) Calcolo turno: cerco il MAX(turno) per questo tavolo+servizio+data
+    let nuovoTurno = 1
+    try {
+      const { startUTC, endUTC } = dataLocaleToUtcRange(dataLocale)
+      const { data: prev, error: errMax } = await supabase
+        .from('orders')
+        .select('turno')
+        .eq('numero_tavolo', numTavolo)
+        .eq('servizio', servizio)
+        .gte('created_at', startUTC)
+        .lt('created_at', endUTC)
+        .order('turno', { ascending: false })
+        .limit(1)
+      if (errMax) throw errMax
+      const ultimoTurno = prev?.[0]?.turno ?? 0
+      if (ultimoTurno >= 1) {
+        const volte = ultimoTurno === 1 ? 'volta' : 'volte'
+        const okTurno = window.confirm(
+          `⚠️ Il tavolo ${numTavolo} è già stato utilizzato ${ultimoTurno} ${volte} in questo servizio (${servizio.toUpperCase()}).\n\nQuesto sarà il turno ${ultimoTurno + 1}. Confermi?`
+        )
+        if (!okTurno) {
+          setTimeout(() => tavoloRef.current?.focus(), 50)
+          return
+        }
+        nuovoTurno = ultimoTurno + 1
+      }
+    } catch (e) {
+      alert('Errore controllo turno: ' + (e.message || e))
+      return
+    }
+
+    // 2) Conferma pagamento
     const ok = window.confirm(`Pagamento ricevuto: € ${totale.toFixed(2)} — Confermi?`)
     if (!ok) return
+
+    // 3) Crea ordine con servizio + turno
     setSubmitting(true)
     try {
       await onCreate(
-        parseInt(tavolo, 10),
+        numTavolo,
         Math.max(1, parseInt(persone, 10) || 1),
         itemsArr,
-        note || null
+        note || null,
+        { servizio, turno: nuovoTurno }
       )
     } catch (e) {
       alert('Errore creazione ordine: ' + (e.message || e))
@@ -536,6 +589,7 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
         <label className="block">
           <span className="text-sm opacity-80">N. Tavolo</span>
           <input
+            ref={tavoloRef}
             type="number" inputMode="numeric" min="1"
             value={tavolo} onChange={e => setTavolo(e.target.value)}
             className="input-base mt-1" placeholder="es. 12"
