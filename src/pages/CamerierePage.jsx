@@ -423,17 +423,17 @@ function Sezione({ titolo, items, colore }) {
         {items.map(it => (
           <li
             key={it.id}
-            className="flex items-center justify-between card py-2"
+            className="flex items-start justify-between gap-3 card py-2"
           >
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
               <span className={`badge ${it.pronto ? 'bg-green-700' : 'bg-yellow-600'}`}>
                 {it.pronto ? 'Pronto' : 'In attesa'}
               </span>
-              <span className="font-semibold truncate">
+              <span className="font-semibold break-words whitespace-normal">
                 {it.nome_item}
               </span>
             </div>
-            <div className="flex items-center gap-3 text-sm">
+            <div className="flex items-center gap-3 text-sm shrink-0">
               <span className="opacity-80">× {it.quantita}</span>
               <span className="font-bold">
                 € {(Number(it.prezzo_unitario) * it.quantita).toFixed(2)}

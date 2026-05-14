@@ -128,9 +128,11 @@ function StationCard({ order, items, onReady }) {
 
       <ul className="space-y-1 mb-3">
         {aggr.map(([nome, q]) => (
-          <li key={nome} className="flex items-center justify-between text-xl">
-            <span className="font-semibold">{nome}</span>
-            <span className="font-bold text-2xl">× {q}</span>
+          <li key={nome} className="flex items-start justify-between gap-3 text-xl">
+            <span className="font-semibold flex-1 min-w-0 break-words whitespace-normal">
+              {nome}
+            </span>
+            <span className="font-bold text-2xl shrink-0">× {q}</span>
           </li>
         ))}
       </ul>
