@@ -45,6 +45,11 @@ export default function OrderCard({ order, items = [], onClick, onDelete }) {
               {formatDataOra(order.created_at)}
             </span>
           )}
+          {order.cameriere_nome && (
+            <span className="text-xs text-gray-500 italic">
+              👤 {order.cameriere_nome}
+            </span>
+          )}
         </div>
         <span className={`badge text-white ${STATO_COLORI[order.stato] || 'bg-gray-600'}`}>
           {STATO_LABEL[order.stato] || order.stato}

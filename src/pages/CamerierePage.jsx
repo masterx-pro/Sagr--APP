@@ -245,7 +245,10 @@ export default function CamerierePage({ user, onLogout }) {
             onRefresh={loadMenu}
             refreshing={menuLoading}
             onCreate={async (tavolo, persone, items, note, extra) => {
-              await createOrder(tavolo, persone, items, note, extra)
+              await createOrder(tavolo, persone, items, note, {
+                ...extra,
+                cameriere_nome: user.nome,
+              })
               await refetchOrders()
               setView('list')
             }}

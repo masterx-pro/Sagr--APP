@@ -85,6 +85,7 @@ export function useOrders({ autoload = false } = {}) {
     }
     if (extra?.servizio) insertObj.servizio = extra.servizio
     if (extra?.turno != null) insertObj.turno = extra.turno
+    if (extra?.cameriere_nome) insertObj.cameriere_nome = extra.cameriere_nome
 
     const { data: order, error: e1 } = await supabase
       .from('orders')
@@ -162,7 +163,10 @@ export function useOrders({ autoload = false } = {}) {
     if (error) throw error
   }, [])
 
-  // Marca pronti tutti gli item di una categoria su un tavolo specifico
+  // Marca pronti tutti gli item di una categoria su un tavolo specifico.
+  // NON aggiorna piu' lo stato dell'ordine: dopo il refactor "pagamento immediato",
+  // ogni ordine resta 'pagato' dalla creazione e il colore/avanzamento viene
+  // derivato lato UI dai flag `pronto` degli items.
   const markTableCategoryReady = useCallback(async (orderId, categoria) => {
     const { error } = await supabase
       .from('order_items')
@@ -171,28 +175,6 @@ export function useOrders({ autoload = false } = {}) {
       .eq('categoria', categoria)
       .eq('pronto', false)
     if (error) throw error
-
-    // Aggiorna stato ordine se entrambe le categorie sono complete
-    const { data: items } = await supabase
-      .from('order_items')
-      .select('categoria, pronto')
-      .eq('order_id', orderId)
-    if (items) {
-      const cucinaOk = items.filter(i => i.categoria === 'cucina').every(i => i.pronto)
-      const barOk    = items.filter(i => i.categoria === 'bar').every(i => i.pronto)
-      const hasCucina = items.some(i => i.categoria === 'cucina')
-      const hasBar    = items.some(i => i.categoria === 'bar')
-
-      let nuovoStato = 'aperto'
-      if ((cucinaOk || !hasCucina) && (barOk || !hasBar)) nuovoStato = 'completo'
-      else if (cucinaOk && hasCucina) nuovoStato = 'cucina_pronta'
-      else if (barOk && hasBar) nuovoStato = 'bar_pronto'
-
-      await supabase
-        .from('orders')
-        .update({ stato: nuovoStato })
-        .eq('id', orderId)
-    }
   }, [])
 
   const markOrderPaid = useCallback(async (orderId) => {
