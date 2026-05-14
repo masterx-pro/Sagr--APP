@@ -98,11 +98,21 @@ export default function CamerierePage({ user, onLogout }) {
     createOrder, addItemsToOrder
   } = useOrders()
 
+  const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
   const refetchOrders = useCallback(
-    () => fetchPaidOrders(getServizioAttuale()),
-    [fetchPaidOrders]
+    () => fetchPaidOrders(servizioCorrente),
+    [fetchPaidOrders, servizioCorrente]
   )
   useEffect(() => { refetchOrders() }, [refetchOrders])
+
+  // Auto-switch pranzo/cena a 16:00: poll ogni 60s, se cambia → refetch automatico
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nuovo = getServizioAttuale()
+      if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
+    }, 60_000)
+    return () => clearInterval(interval)
+  }, [servizioCorrente])
 
   const loadMenu = useCallback(async () => {
     setMenuLoading(true)

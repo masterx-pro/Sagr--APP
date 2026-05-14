@@ -41,14 +41,14 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
   const [view, setView] = useState('per-tavolo') // 'per-tavolo' | 'aggregato'
   const { markTableCategoryReady, markPietanzaReady } = useOrders()
   const [refreshTick, setRefreshTick] = useState(0)
+  const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
 
   const load = async () => {
     // Bar/Cucina vedono SOLO il servizio attuale
-    const servizio = getServizioAttuale()
     const { data, error } = await supabase
       .from('orders')
       .select('id, numero_tavolo, n_persone, created_at, note, servizio, turno, order_items(*, menu_items(ordine))')
-      .eq('servizio', servizio)
+      .eq('servizio', servizioCorrente)
       .order('created_at', { ascending: true })
     if (error) {
       console.error(error)
@@ -63,7 +63,16 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
     setPending(grouped)
   }
 
-  useEffect(() => { load() }, [refreshTick, categoria])
+  useEffect(() => { load() }, [refreshTick, categoria, servizioCorrente])
+
+  // Auto-switch pranzo/cena a 16:00
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nuovo = getServizioAttuale()
+      if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
+    }, 60_000)
+    return () => clearInterval(interval)
+  }, [servizioCorrente])
 
   useEffect(() => {
     const channel = supabase

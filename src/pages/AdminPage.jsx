@@ -4,6 +4,7 @@ import { useOrders } from '../hooks/useOrders.js'
 import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
 import OrderCard from '../components/OrderCard.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
+import { getServizioAttuale } from '../utils/servizio.js'
 
 /**
  * AdminPage: 4 tab → Ordini, Menu, Riepilogo, Staff.
@@ -11,6 +12,17 @@ import ServizioBadge from '../components/ServizioBadge.jsx'
 export default function AdminPage({ user, onLogout }) {
   useExitConfirmGuard(onLogout)
   const [tab, setTab] = useState('ordini')
+
+  // Auto-switch badge pranzo/cena a 16:00 (admin vede tutti i servizi,
+  // qui basta forzare il re-render dell'header).
+  const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const nuovo = getServizioAttuale()
+      if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
+    }, 60_000)
+    return () => clearInterval(interval)
+  }, [servizioCorrente])
 
   return (
     <div className="min-h-screen flex flex-col">
