@@ -5,6 +5,7 @@ import {
   getPortataFromOrdine,
   getTempoConsumoPortata,
   getTimerMandata,
+  getTimerMandateMinuti,
 } from './servizio.js'
 
 // -------------------------------------------------------------
@@ -118,4 +119,53 @@ export function getMinutiRimanenti(mandataProntaAt, portataCorrente, impostazion
   const minutiSoglia = getTimerMandata(portataCorrente, impostazioni)
   const elapsedMin = (Date.now() - t0) / 60_000
   return Math.round(minutiSoglia - elapsedMin)
+}
+
+// -------------------------------------------------------------
+// Timer v3: singolo intervallo configurabile tra mandate
+// -------------------------------------------------------------
+//
+// Quando la cucina marca "pronta" una mandata, parte un timer
+// (default 10 min, configurabile in admin). Allo scadere, la
+// mandata successiva diventa "urgente" in cucina/bar.
+
+// Restituisce il timestamp "mandata_pronta_at" piu' recente tra i
+// gli items di una mandata. null se la mandata non e' ancora pronta.
+export function getMandataProntaAt(mandataItems) {
+  const t = (mandataItems || [])
+    .map(i => i.mandata_pronta_at)
+    .filter(Boolean)
+    .map(s => new Date(s).getTime())
+    .filter(n => Number.isFinite(n))
+  if (t.length === 0) return null
+  return new Date(Math.max(...t)).toISOString()
+}
+
+// True se sono passati >= tempo_timer_mandate_min minuti dal
+// "mandata_pronta_at" della mandata precedente.
+export function timerMandataScaduto(mandataPrecProntaAt, impostazioni) {
+  if (!mandataPrecProntaAt) return false
+  const t0 = new Date(mandataPrecProntaAt).getTime()
+  if (!Number.isFinite(t0)) return false
+  const soglia = getTimerMandateMinuti(impostazioni)
+  const elapsedMin = (Date.now() - t0) / 60_000
+  return elapsedMin >= soglia
+}
+
+// Secondi rimanenti al via della mandata successiva (puo' essere negativo).
+// Utile per countdown live tipo "⏱ 8:32 al via".
+export function secondiRimanentiTimerMandata(mandataPrecProntaAt, impostazioni) {
+  if (!mandataPrecProntaAt) return null
+  const t0 = new Date(mandataPrecProntaAt).getTime()
+  if (!Number.isFinite(t0)) return null
+  const sogliaMs = getTimerMandateMinuti(impostazioni) * 60_000
+  return Math.floor((t0 + sogliaMs - Date.now()) / 1000)
+}
+
+// Format "MM:SS" da un valore in secondi (gestisce negativi -> 0:00).
+export function formatCountdownSec(sec) {
+  const s = Math.max(0, sec | 0)
+  const m = Math.floor(s / 60)
+  const r = s % 60
+  return `${m}:${String(r).padStart(2, '0')}`
 }

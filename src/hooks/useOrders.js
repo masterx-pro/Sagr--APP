@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
-import { isBarMandata2 } from '../utils/servizio.js'
+import { getMandataPerItem } from '../utils/servizio.js'
 
 /**
  * useOrders v2: data layer per il modello nuovo.
@@ -174,9 +174,9 @@ export function useOrders({ autoload = false } = {}) {
     if (e1) throw e1
 
     const rows = items.map(it => {
-      // Caffe'/amari forzati su mandata 2
-      const forced = isBarMandata2(it.menuItem)
-      const mandata = forced ? 2 : (it.mandata ?? 1)
+      // La mandata viene SEMPRE derivata dalla sottocategoria del menu_item
+      // (autoritativa in v3). Il parametro `it.mandata` viene ignorato.
+      const mandata = getMandataPerItem(it.menuItem)
       return {
         order_id: order.id,
         item_id: it.menuItem.id,
@@ -195,9 +195,13 @@ export function useOrders({ autoload = false } = {}) {
   }, [])
 
   // Aggiunge righe a un ordine esistente. Lo stato dell'ordine non cambia.
-  //   items: [{ menuItem, quantita, mandata? }]
-  // Se l'ordine e' 'stornato' i nuovi item nascono in_pausa, altrimenti in_attesa.
-  const addItemsToOrder = useCallback(async (orderId, items) => {
+  //   items:   [{ menuItem, quantita }]
+  //   options: { statoIniziale?: 'in_attesa'|'in_preparazione'|'in_pausa' }
+  // Se l'ordine e' 'stornato' i nuovi item nascono in_pausa.
+  // Se viene passato statoIniziale lo si usa (utile per "Sblocca M4" che
+  // crea direttamente items in 'in_preparazione', cosi' che cucina/bar
+  // li vedano subito attivi).
+  const addItemsToOrder = useCallback(async (orderId, items, options = {}) => {
     if (!items || items.length === 0) return
 
     const { data: cur, error: eRead } = await supabase
@@ -207,11 +211,13 @@ export function useOrders({ autoload = false } = {}) {
       .single()
     if (eRead) throw eRead
 
-    const initialMandataStato = cur.stato === 'stornato' ? 'in_pausa' : 'in_attesa'
+    let initialMandataStato
+    if (cur.stato === 'stornato')          initialMandataStato = 'in_pausa'
+    else if (options.statoIniziale)        initialMandataStato = options.statoIniziale
+    else                                    initialMandataStato = 'in_attesa'
 
     const rows = items.map(it => {
-      const forced = isBarMandata2(it.menuItem)
-      const mandata = forced ? 2 : (it.mandata ?? 1)
+      const mandata = getMandataPerItem(it.menuItem)
       return {
         order_id: orderId,
         item_id: it.menuItem.id,
@@ -242,9 +248,24 @@ export function useOrders({ autoload = false } = {}) {
   // MANDATE — flusso cucina/bar
   // -----------------------------------------------------------
 
-  // Cucina/Bar marca tutta una mandata come pronta sul proprio lato.
-  // Filtra per categoria: cucina aggiorna solo i suoi item, bar i suoi.
-  // Da qui parte il timer per la mandata successiva.
+  // Step 1 del flusso progressivo cucina/bar: items passano da
+  // 'in_attesa' a 'in_preparazione'. Filtra per categoria.
+  const markMandataInPreparazione = useCallback(async (orderId, mandataNum, categoria) => {
+    const { error } = await supabase
+      .from('order_items')
+      .update({
+        mandata_stato: 'in_preparazione',
+        mandata_inviata_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('mandata', mandataNum)
+      .eq('categoria', categoria)
+      .eq('mandata_stato', 'in_attesa')
+    if (error) throw error
+  }, [])
+
+  // Step 2 del flusso progressivo: items passano a 'pronta' e parte il
+  // timer per la mandata successiva.
   const markMandataReady = useCallback(async (orderId, mandataNum, categoria) => {
     const { error } = await supabase
       .from('order_items')
@@ -275,10 +296,10 @@ export function useOrders({ autoload = false } = {}) {
     if (error) throw error
   }, [])
 
-  // Cameriere "Invia caffe'/amari": le voci bar mandata=2 passano
-  // da in_attesa a in_preparazione -> diventano visibili al bar con
-  // bordo urgente.
-  const sbloccaBarMandata2 = useCallback(async (orderId) => {
+  // Cameriere "Sblocca M4": tutti gli items in mandata 4 (dolci cucina
+  // + caffe'/amari bar) passano da in_attesa a in_preparazione e
+  // diventano subito visibili alle stazioni.
+  const sbloccaMandata4 = useCallback(async (orderId) => {
     const { error } = await supabase
       .from('order_items')
       .update({
@@ -286,11 +307,14 @@ export function useOrders({ autoload = false } = {}) {
         mandata_inviata_at: new Date().toISOString(),
       })
       .eq('order_id', orderId)
-      .eq('categoria', 'bar')
-      .eq('mandata', 2)
+      .eq('mandata', 4)
       .eq('mandata_stato', 'in_attesa')
     if (error) throw error
   }, [])
+
+  // Alias retro-compat (v2). Da rimuovere appena tutti i callers passano
+  // alla nuova denominazione.
+  const sbloccaBarMandata2 = sbloccaMandata4
 
   // -----------------------------------------------------------
   // PAGAMENTI — storno / conferma cassa
@@ -383,9 +407,11 @@ export function useOrders({ autoload = false } = {}) {
     createOrder,
     addItemsToOrder,
     // mandate
+    markMandataInPreparazione,
     markMandataReady,
     markMandataConsegnata,
-    sbloccaBarMandata2,
+    sbloccaMandata4,
+    sbloccaBarMandata2, // retro-compat: alias di sbloccaMandata4
     // pagamenti
     stornaOrdine,
     confermaPagamentoCassa,

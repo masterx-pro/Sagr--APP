@@ -82,7 +82,7 @@ export default function CamerierePage({ user, onLogout }) {
   const {
     orders, fetchOrdiniAttivi,
     createOrder, addItemsToOrder,
-    markMandataConsegnata, sbloccaBarMandata2,
+    markMandataConsegnata, sbloccaMandata4,
     stornaOrdine,
   } = useOrders()
 
@@ -288,16 +288,16 @@ export default function CamerierePage({ user, onLogout }) {
           <DettaglioOrdine
             orderId={selectedId}
             menu={menu}
-            onAddItems={async (items) => {
-              await addItemsToOrder(selectedId, items)
+            onAddItems={async (items, opts) => {
+              await addItemsToOrder(selectedId, items, opts)
               await refetchOrders()
             }}
             onMandataConsegnata={async (mandataNum, categoria) => {
               await markMandataConsegnata(selectedId, mandataNum, categoria)
               await refetchOrders()
             }}
-            onSbloccaBarM2={async () => {
-              await sbloccaBarMandata2(selectedId)
+            onSbloccaM4={async () => {
+              await sbloccaMandata4(selectedId)
               await refetchOrders()
             }}
             onStorna={async (note, tipoPagamentoOverride) => {
@@ -596,7 +596,8 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
         />
       </label>
 
-      <MenuSelector items={menu} quantities={qty} onChange={setQty} />
+      {/* In creazione ordine M4 e' bloccata: si sblocca solo dopo M3 pronta */}
+      <MenuSelector items={menu} quantities={qty} onChange={setQty} mandateAbilitate={[1,2,3]} />
 
       <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo
                       p-3 mobile-landscape:p-2 z-20">
@@ -718,9 +719,10 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
 
 // -------------------- DETTAGLIO ORDINE --------------------
 
-function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaBarM2, onStorna }) {
+function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaM4, onStorna }) {
   const [order, setOrder] = useState(null)
-  const [adding, setAdding] = useState(false)
+  // adding: null | 'normal' | 'm4'
+  const [adding, setAdding] = useState(null)
   const [qty, setQty] = useState({})
   const [busy, setBusy] = useState(false)
 
@@ -749,8 +751,10 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
 
   const items = order.order_items || []
 
-  // VISTA "AGGIUNGI ITEMS"
+  // VISTA "AGGIUNGI ITEMS" (normal o m4)
   if (adding) {
+    const isM4Mode = adding === 'm4'
+    const mandateAbilitate = isM4Mode ? [4] : [1, 2, 3]
     const itemsArr = Object.entries(qty)
       .map(([id, val]) => {
         const m = menu.find(mm => mm.id === id)
@@ -764,9 +768,14 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
     return (
       <div className="pb-32 mobile-landscape:pb-24">
         <p className="mb-3 font-semibold">
-          Aggiungi al tavolo {order.numero_tavolo}{order.nome_cliente ? ' · ' + order.nome_cliente : ''}
+          {isM4Mode ? '🔓 Sblocca M4 — dolci / caffè / amari' : 'Aggiungi'} al tavolo {order.numero_tavolo}{order.nome_cliente ? ' · ' + order.nome_cliente : ''}
         </p>
-        <MenuSelector items={menu} quantities={qty} onChange={setQty} />
+        <MenuSelector
+          items={menu}
+          quantities={qty}
+          onChange={setQty}
+          mandateAbilitate={mandateAbilitate}
+        />
         <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo
                         p-3 mobile-landscape:p-2 z-20">
           <div className="flex items-center justify-between mb-2">
@@ -777,7 +786,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
           </div>
           <div className="flex gap-2">
             <button
-              onClick={() => { setAdding(false); setQty({}) }}
+              onClick={() => { setAdding(null); setQty({}) }}
               className="btn-neutral flex-1"
             >
               Annulla
@@ -787,9 +796,12 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
               onClick={async () => {
                 setBusy(true)
                 try {
-                  await onAddItems(itemsArr)
+                  // In modalita' M4 gli items partono gia' 'in_preparazione'
+                  // cosi' cucina/bar li vedono subito attivi.
+                  const opts = isM4Mode ? { statoIniziale: 'in_preparazione' } : undefined
+                  await onAddItems(itemsArr, opts)
                   setQty({})
-                  setAdding(false)
+                  setAdding(null)
                   await load()
                 } catch (e) {
                   alert('Errore: ' + (e.message || e))
@@ -816,10 +828,11 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
   const cucinaNumeri = getNumeriMandata(cucinaItems)
   const barNumeri    = getNumeriMandata(barItems)
 
-  // Bar M2 sblocco disponibile?
-  const puoSbloccareBarM2 = !stornato
-    && barGroups[2]
-    && barGroups[2].every(i => i.mandata_stato === 'in_attesa')
+  // Sblocco M4 disponibile? Si attiva quando M3 cucina e' pronta o consegnata.
+  const cucinaM3 = cucinaGroups[3]
+  const m3Pronta = cucinaM3 && cucinaM3.length > 0
+    && cucinaM3.every(i => i.mandata_stato === 'pronta' || i.mandata_stato === 'consegnata')
+  const puoSbloccareM4 = !stornato && !inCassa && m3Pronta
 
   const azioneStorna = async () => {
     const note = window.prompt('Motivo dello storno (opzionale):')
@@ -916,14 +929,17 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         onConsegnata={(n) => onMandataConsegnata(n, 'bar')}
       />
 
-      {puoSbloccareBarM2 && (
+      {puoSbloccareM4 && (
         <button
           disabled={busy}
           onClick={async () => {
-            if (!window.confirm('Inviare caffè/amari al bar adesso?')) return
+            if (!window.confirm('Sbloccare M4? Verra\' aperto il menu per ordinare dolci, caffe\' e amari.')) return
             try {
               setBusy(true)
-              await onSbloccaBarM2()
+              // 1) sblocca eventuali items M4 gia' presenti (in_attesa -> in_preparazione)
+              await onSbloccaM4()
+              // 2) apri modalita' aggiunta items M4
+              setAdding('m4')
             } catch (e) {
               alert('Errore: ' + (e.message || e))
             } finally {
@@ -932,12 +948,12 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
           }}
           className="btn-primary w-full"
         >
-          🔓 Invia caffè/amari al bar
+          🔓 Sblocca M4 — dolci / caffè / amari
         </button>
       )}
 
       {!stornato && !inCassa && (
-        <button onClick={() => setAdding(true)} className="btn-neutral w-full" disabled={busy}>
+        <button onClick={() => setAdding('normal')} className="btn-neutral w-full" disabled={busy}>
           + Aggiungi item
         </button>
       )}

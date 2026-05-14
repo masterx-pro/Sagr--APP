@@ -4,7 +4,9 @@ import { useOrders } from '../hooks/useOrders.js'
 import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
 import OrderCard from '../components/OrderCard.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
-import { getServizioAttuale } from '../utils/servizio.js'
+import { getServizioAttuale, rangeOrdinePerSottocategoria } from '../utils/servizio.js'
+
+const SOTTOCATEGORIE_CUCINA = ['antipasto', 'primo', 'secondo', 'contorno', 'dolce']
 
 const STATI_ORDINE = ['bozza', 'attesa_cassa', 'confermato', 'stornato', 'completato']
 
@@ -186,6 +188,7 @@ function TabMenu() {
   const [nome, setNome] = useState('')
   const [prezzo, setPrezzo] = useState('')
   const [categoria, setCategoria] = useState('cucina')
+  const [sottocategoria, setSottocategoria] = useState('antipasto')
   const [editingId, setEditingId] = useState(null)
   const [refreshing, setRefreshing] = useState(false)
 
@@ -209,6 +212,24 @@ function TabMenu() {
     load()
   }
 
+  // Calcola il prossimo `ordine` libero nel range della sottocategoria,
+  // basandosi sugli items gia' presenti in quella sottocategoria.
+  function calcolaOrdineAuto(categoria, sotto) {
+    if (categoria !== 'cucina') {
+      // Bar: append in coda
+      const used = items.filter(i => i.categoria === 'bar').map(i => i.ordine ?? 0)
+      return (used.length ? Math.max(...used) : 0) + 1
+    }
+    const range = rangeOrdinePerSottocategoria(sotto)
+    if (!range) return 99
+    const [lo, hi] = range
+    const used = new Set(items
+      .filter(i => i.categoria === 'cucina' && i.ordine >= lo && i.ordine <= hi)
+      .map(i => i.ordine))
+    for (let o = lo; o <= hi; o++) if (!used.has(o)) return o
+    return hi // saturato: appiccico in fondo (admin lo aggiustera')
+  }
+
   const aggiungi = async (e) => {
     e.preventDefault()
     const p = parseFloat(prezzo.replace(',', '.'))
@@ -216,12 +237,19 @@ function TabMenu() {
       alert('Compila nome e prezzo validi')
       return
     }
-    const { error } = await supabase.from('menu_items').insert({
+    if (categoria === 'cucina' && !SOTTOCATEGORIE_CUCINA.includes(sottocategoria)) {
+      alert('Sottocategoria cucina non valida')
+      return
+    }
+    const ordine = calcolaOrdineAuto(categoria, sottocategoria)
+    const insertObj = {
       nome: nome.trim(),
       prezzo: p,
       categoria,
-      ordine: 99
-    })
+      ordine,
+    }
+    if (categoria === 'cucina') insertObj.sottocategoria = sottocategoria
+    const { error } = await supabase.from('menu_items').insert(insertObj)
     if (error) { alert(error.message); return }
     setNome(''); setPrezzo('')
     load()
@@ -294,6 +322,24 @@ function TabMenu() {
             Bar
           </button>
         </div>
+
+        {categoria === 'cucina' && (
+          <label className="block">
+            <span className="text-xs opacity-80">Sottocategoria *</span>
+            <select
+              className="input-base mt-1"
+              value={sottocategoria}
+              onChange={e => setSottocategoria(e.target.value)}
+            >
+              <option value="antipasto">Antipasto</option>
+              <option value="primo">Primo</option>
+              <option value="secondo">Secondo</option>
+              <option value="contorno">Contorno</option>
+              <option value="dolce">Dolce</option>
+            </select>
+          </label>
+        )}
+
         <button type="submit" className="btn-success w-full">Aggiungi</button>
       </form>
 
@@ -325,6 +371,7 @@ const PORTATE_CUCINA = [
   { label: 'Antipasti', test: o => o >= 1  && o <= 9  },
   { label: 'Primi',     test: o => o >= 10 && o <= 19 },
   { label: 'Secondi',   test: o => o >= 20 && o <= 29 },
+  { label: 'Contorni',  test: o => o >= 40 && o <= 49 },
   { label: 'Dolci',     test: o => o >= 30 && o <= 39 },
 ]
 
@@ -414,6 +461,7 @@ function FormModificaItem({ item, onSave, onCancel }) {
   const [nome, setNome] = useState(item.nome)
   const [prezzo, setPrezzo] = useState(String(item.prezzo))
   const [categoria, setCategoria] = useState(item.categoria)
+  const [sottocategoria, setSottocategoria] = useState(item.sottocategoria || 'antipasto')
   const [ordine, setOrdine] = useState(String(item.ordine ?? 0))
   const [saving, setSaving] = useState(false)
 
@@ -427,12 +475,14 @@ function FormModificaItem({ item, onSave, onCancel }) {
     }
     setSaving(true)
     try {
-      await onSave(item.id, {
+      const patch = {
         nome: nome.trim(),
         prezzo: p,
         categoria,
         ordine: isNaN(o) ? 0 : o,
-      })
+      }
+      patch.sottocategoria = categoria === 'cucina' ? sottocategoria : null
+      await onSave(item.id, patch)
     } finally {
       setSaving(false)
     }
@@ -468,8 +518,24 @@ function FormModificaItem({ item, onSave, onCancel }) {
           <option value="bar">Bar</option>
         </select>
       </label>
+      {categoria === 'cucina' && (
+        <label className="block">
+          <span className="text-xs opacity-80">Sottocategoria</span>
+          <select
+            className="input-base mt-1"
+            value={sottocategoria}
+            onChange={e => setSottocategoria(e.target.value)}
+          >
+            <option value="antipasto">Antipasto</option>
+            <option value="primo">Primo</option>
+            <option value="secondo">Secondo</option>
+            <option value="contorno">Contorno</option>
+            <option value="dolce">Dolce</option>
+          </select>
+        </label>
+      )}
       <label className="block">
-        <span className="text-xs opacity-80">Ordine (1-9 antipasti, 10-19 primi, …, bar 40+ = caffè/amari)</span>
+        <span className="text-xs opacity-80">Ordine (cucina: 1-9 antip, 10-19 primi, 20-29 sec, 30-39 dolci, 40-49 contorni; bar 40+ = caffè/amari)</span>
         <input
           className="input-base mt-1"
           inputMode="numeric"
@@ -794,6 +860,7 @@ function FormAggiungiUtente({ users, onAdded }) {
 // -------------------- TAB IMPOSTAZIONI (TIMER) --------------------
 
 const CHIAVI_IMPOSTAZIONI = [
+  { chiave: 'tempo_timer_mandate_min',        label: 'Timer tra mandate (min) — usato in cucina/bar per evidenziare la mandata successiva' },
   { chiave: 'tempo_consegna_min',             label: 'Tempo consegna al tavolo (min)' },
   { chiave: 'tempo_preparazione_cucina_min',  label: 'Tempo preparazione cucina (min)' },
   { chiave: 'tempo_consumo_antipasto_min',    label: 'Consumo antipasti (min)' },
