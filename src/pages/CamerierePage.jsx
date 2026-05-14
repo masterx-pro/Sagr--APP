@@ -50,7 +50,7 @@ export default function CamerierePage({ user, onLogout }) {
         () => fetchPaidOrders())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [fetchOpenOrders])
+  }, [fetchPaidOrders])
 
   // Blocca refresh/chiusura tab durante la compilazione di un nuovo ordine
   useEffect(() => {

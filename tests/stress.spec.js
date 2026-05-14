@@ -92,6 +92,11 @@ async function runCameriere(browser, cam) {
   const context = await browser.newContext();
   const page = await context.newPage();
   page.on('pageerror', err => logFn(`[pageerror] ${err.message}`));
+  // Auto-accetta i dialog (confirm pagamento, ecc.)
+  page.on('dialog', async d => {
+    logFn(`[dialog ${d.type()}] "${d.message()}" → accept`);
+    await d.accept();
+  });
 
   let success = 0;
 
