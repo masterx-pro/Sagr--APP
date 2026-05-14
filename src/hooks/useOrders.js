@@ -1,47 +1,43 @@
 import { useCallback, useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
+import { isBarMandata2 } from '../utils/servizio.js'
 
 /**
- * useOrders: centralizza le operazioni sugli ordini.
+ * useOrders v2: data layer per il modello nuovo.
  *
- * - fetchOpenOrders: ordini non pagati (con items)
- * - createOrder: crea ordine + righe items
- * - markItemsReady: marca pronto un set di order_items
- * - markOrderPaid: segna ordine come pagato
- * - addItemsToOrder: aggiunge altre voci a un ordine esistente
+ * Stati ordine:
+ *   'bozza'        creato ma senza pagamento scelto
+ *   'attesa_cassa' cameriere ha scelto contanti, in coda alla cassa
+ *   'confermato'   pagato (bancomat o contanti) -> attivo in cucina/bar
+ *   'stornato'     in pausa, attende ri-conferma cassa
+ *   'completato'   tutto consegnato e chiuso
+ *
+ * Le voci dell'ordine hanno:
+ *   mandata        (1, 2, 3, ...)
+ *   mandata_stato  ('in_attesa'|'in_preparazione'|'pronta'|'consegnata'|'in_pausa')
+ *
+ * NB: il vecchio campo `pronto` resta in DB per compatibilita' storica
+ *     ma il codice v2 NON lo tocca piu'.
  */
 export function useOrders({ autoload = false } = {}) {
   const [orders, setOrders] = useState([])
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState(null)
 
-  const fetchOpenOrders = useCallback(async () => {
-    setLoading(true)
-    setError(null)
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*, order_items(*)')
-      .neq('stato', 'pagato')
-      .order('created_at', { ascending: false })
-    if (error) {
-      setError(error.message)
-      setOrders([])
-    } else {
-      setOrders(data || [])
-    }
-    setLoading(false)
-    return data || []
-  }, [])
+  // -----------------------------------------------------------
+  // FETCHERS
+  // -----------------------------------------------------------
 
-  // Tutti gli ordini pagati (cronologico crescente, vecchi → nuovi).
-  // Filtro opzionale per servizio ('pranzo' | 'cena').
-  const fetchPaidOrders = useCallback(async (servizio = null) => {
+  // Ordini attivi per cameriere/stazioni:
+  //   stato IN ('attesa_cassa','confermato','stornato')
+  // Filtro opzionale per servizio ('pranzo'|'cena').
+  const fetchOrdiniAttivi = useCallback(async (servizio = null) => {
     setLoading(true)
     setError(null)
     let q = supabase
       .from('orders')
       .select('*, order_items(*)')
-      .eq('stato', 'pagato')
+      .in('stato', ['attesa_cassa', 'confermato', 'stornato'])
       .order('created_at', { ascending: true })
     if (servizio) q = q.eq('servizio', servizio)
     const { data, error } = await q
@@ -55,6 +51,26 @@ export function useOrders({ autoload = false } = {}) {
     return data || []
   }, [])
 
+  // Coda cassa: ordini da incassare (contanti pending) o da ri-confermare (storni).
+  const fetchCassaQueue = useCallback(async () => {
+    setLoading(true)
+    setError(null)
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*, order_items(*)')
+      .in('stato', ['attesa_cassa', 'stornato'])
+      .order('created_at', { ascending: true })
+    if (error) {
+      setError(error.message)
+      setOrders([])
+    } else {
+      setOrders(data || [])
+    }
+    setLoading(false)
+    return data || []
+  }, [])
+
+  // Tutti gli ordini (per admin).
   const fetchAllOrders = useCallback(async () => {
     setLoading(true)
     const { data, error } = await supabase
@@ -67,65 +83,122 @@ export function useOrders({ autoload = false } = {}) {
     return data || []
   }, [])
 
-  const createOrder = useCallback(async (tavolo, persone, items, note = null, extra = null) => {
-    // items: [{ menuItem, quantita }]
-    // extra (opzionale): { servizio, turno } — se omesso, usa i default DB
+  // Mappa { chiave: valore } letta dalla tabella impostazioni.
+  const fetchImpostazioni = useCallback(async () => {
+    const { data, error } = await supabase
+      .from('impostazioni')
+      .select('chiave, valore')
+    if (error) throw error
+    const map = {}
+    for (const row of data || []) map[row.chiave] = row.valore
+    return map
+  }, [])
+
+  const saveImpostazione = useCallback(async (chiave, valore) => {
+    const { error } = await supabase
+      .from('impostazioni')
+      .update({ valore: String(valore), updated_at: new Date().toISOString() })
+      .eq('chiave', chiave)
+    if (error) throw error
+  }, [])
+
+  // -----------------------------------------------------------
+  // CREATE / ADD
+  // -----------------------------------------------------------
+
+  // Crea un nuovo ordine.
+  //   items: [{ menuItem, quantita, mandata? }]
+  //          mandata default = 1; per voci bar caffe'/amari (ordine>=40)
+  //          viene forzata a 2 ignorando il parametro.
+  //   pagamento: 'bancomat' | 'contanti' | undefined
+  //          'bancomat'  -> stato 'confermato' (gia' incassato)
+  //          'contanti'  -> stato 'attesa_cassa'
+  //          undefined   -> stato 'bozza'
+  const createOrder = useCallback(async ({
+    tavolo,
+    persone,
+    nomeCliente,
+    items,
+    pagamento,
+    note = null,
+    servizio = null,
+    cameriereNome = null,
+    cameriereId = null,
+  }) => {
+    if (!items || items.length === 0) {
+      throw new Error('Impossibile creare un ordine senza voci')
+    }
+    if (!nomeCliente || !String(nomeCliente).trim()) {
+      throw new Error('Nome cliente obbligatorio')
+    }
+
     const totale = items.reduce(
       (s, it) => s + Number(it.menuItem.prezzo) * it.quantita,
       0
     )
 
+    let stato, tipo_pagamento, pagato_at
+    if (pagamento === 'bancomat') {
+      stato = 'confermato'
+      tipo_pagamento = 'bancomat'
+      pagato_at = new Date().toISOString()
+    } else if (pagamento === 'contanti') {
+      stato = 'attesa_cassa'
+      tipo_pagamento = 'contanti'
+      pagato_at = null
+    } else {
+      stato = 'bozza'
+      tipo_pagamento = null
+      pagato_at = null
+    }
+
     const insertObj = {
       numero_tavolo: tavolo,
       n_persone: persone,
+      nome_cliente: String(nomeCliente).trim(),
       totale,
       note,
-      stato: 'pagato',
-      pagato_at: new Date().toISOString()
+      stato,
+      tipo_pagamento,
+      servizio,
+      cameriere_nome: cameriereNome,
+      cameriere_id: cameriereId,
     }
-    if (extra?.servizio) insertObj.servizio = extra.servizio
-    if (extra?.turno != null) insertObj.turno = extra.turno
-    if (extra?.cameriere_nome) insertObj.cameriere_nome = extra.cameriere_nome
+    if (pagato_at) insertObj.pagato_at = pagato_at
 
     const { data: order, error: e1 } = await supabase
       .from('orders')
       .insert(insertObj)
       .select()
       .single()
-
     if (e1) throw e1
 
-    const rows = items.map(it => ({
-      order_id: order.id,
-      item_id: it.menuItem.id,
-      nome_item: it.menuItem.nome,
-      categoria: it.menuItem.categoria,
-      quantita: it.quantita,
-      prezzo_unitario: it.menuItem.prezzo
-    }))
+    const rows = items.map(it => {
+      // Caffe'/amari forzati su mandata 2
+      const forced = isBarMandata2(it.menuItem)
+      const mandata = forced ? 2 : (it.mandata ?? 1)
+      return {
+        order_id: order.id,
+        item_id: it.menuItem.id,
+        nome_item: it.menuItem.nome,
+        categoria: it.menuItem.categoria,
+        quantita: it.quantita,
+        prezzo_unitario: it.menuItem.prezzo,
+        mandata,
+        mandata_stato: 'in_attesa',
+      }
+    })
 
     const { error: e2 } = await supabase.from('order_items').insert(rows)
     if (e2) throw e2
     return order
   }, [])
 
+  // Aggiunge righe a un ordine esistente. Lo stato dell'ordine non cambia.
+  //   items: [{ menuItem, quantita, mandata? }]
+  // Se l'ordine e' 'stornato' i nuovi item nascono in_pausa, altrimenti in_attesa.
   const addItemsToOrder = useCallback(async (orderId, items) => {
-    // Inserisce nuove righe e aggiorna totale
-    const rows = items.map(it => ({
-      order_id: orderId,
-      item_id: it.menuItem.id,
-      nome_item: it.menuItem.nome,
-      categoria: it.menuItem.categoria,
-      quantita: it.quantita,
-      prezzo_unitario: it.menuItem.prezzo
-    }))
-    const extra = rows.reduce(
-      (s, r) => s + Number(r.prezzo_unitario) * r.quantita,
-      0
-    )
-
-    const { error: e1 } = await supabase.from('order_items').insert(rows)
-    if (e1) throw e1
+    if (!items || items.length === 0) return
 
     const { data: cur, error: eRead } = await supabase
       .from('orders')
@@ -134,53 +207,152 @@ export function useOrders({ autoload = false } = {}) {
       .single()
     if (eRead) throw eRead
 
-    const newStato = cur.stato === 'pagato' ? 'pagato' : 'aperto'
+    const initialMandataStato = cur.stato === 'stornato' ? 'in_pausa' : 'in_attesa'
+
+    const rows = items.map(it => {
+      const forced = isBarMandata2(it.menuItem)
+      const mandata = forced ? 2 : (it.mandata ?? 1)
+      return {
+        order_id: orderId,
+        item_id: it.menuItem.id,
+        nome_item: it.menuItem.nome,
+        categoria: it.menuItem.categoria,
+        quantita: it.quantita,
+        prezzo_unitario: it.menuItem.prezzo,
+        mandata,
+        mandata_stato: initialMandataStato,
+      }
+    })
+    const extra = rows.reduce(
+      (s, r) => s + Number(r.prezzo_unitario) * r.quantita,
+      0
+    )
+
+    const { error: e1 } = await supabase.from('order_items').insert(rows)
+    if (e1) throw e1
+
     const { error: e2 } = await supabase
       .from('orders')
-      .update({ totale: Number(cur.totale) + extra, stato: newStato })
+      .update({ totale: Number(cur.totale) + extra })
       .eq('id', orderId)
     if (e2) throw e2
   }, [])
 
-  // Marca pronti tutti gli order_items con uno specifico nome_item nella categoria,
-  // per tutti gli ordini non pagati. Usato dalla vista aggregata di cucina/bar.
-  const markPietanzaReady = useCallback(async (categoria, nomeItem) => {
-    const { error } = await supabase
-      .from('order_items')
-      .update({ pronto: true })
-      .eq('categoria', categoria)
-      .eq('nome_item', nomeItem)
-      .eq('pronto', false)
-    if (error) throw error
-  }, [])
+  // -----------------------------------------------------------
+  // MANDATE — flusso cucina/bar
+  // -----------------------------------------------------------
 
-  const markItemsReady = useCallback(async (orderItemIds) => {
-    if (!orderItemIds || orderItemIds.length === 0) return
+  // Cucina/Bar marca tutta una mandata come pronta sul proprio lato.
+  // Filtra per categoria: cucina aggiorna solo i suoi item, bar i suoi.
+  // Da qui parte il timer per la mandata successiva.
+  const markMandataReady = useCallback(async (orderId, mandataNum, categoria) => {
     const { error } = await supabase
       .from('order_items')
-      .update({ pronto: true })
-      .in('id', orderItemIds)
-    if (error) throw error
-  }, [])
-
-  // Marca pronti tutti gli item di una categoria su un tavolo specifico.
-  // NON aggiorna piu' lo stato dell'ordine: dopo il refactor "pagamento immediato",
-  // ogni ordine resta 'pagato' dalla creazione e il colore/avanzamento viene
-  // derivato lato UI dai flag `pronto` degli items.
-  const markTableCategoryReady = useCallback(async (orderId, categoria) => {
-    const { error } = await supabase
-      .from('order_items')
-      .update({ pronto: true })
+      .update({
+        mandata_stato: 'pronta',
+        mandata_pronta_at: new Date().toISOString(),
+      })
       .eq('order_id', orderId)
+      .eq('mandata', mandataNum)
       .eq('categoria', categoria)
-      .eq('pronto', false)
+      .in('mandata_stato', ['in_attesa', 'in_preparazione'])
     if (error) throw error
   }, [])
 
-  const markOrderPaid = useCallback(async (orderId) => {
+  // Cameriere conferma la consegna al tavolo: la mandata esce dal flusso attivo.
+  const markMandataConsegnata = useCallback(async (orderId, mandataNum, categoria = null) => {
+    let q = supabase
+      .from('order_items')
+      .update({
+        mandata_stato: 'consegnata',
+        mandata_consegnata_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('mandata', mandataNum)
+      .neq('mandata_stato', 'consegnata')
+    if (categoria) q = q.eq('categoria', categoria)
+    const { error } = await q
+    if (error) throw error
+  }, [])
+
+  // Cameriere "Invia caffe'/amari": le voci bar mandata=2 passano
+  // da in_attesa a in_preparazione -> diventano visibili al bar con
+  // bordo urgente.
+  const sbloccaBarMandata2 = useCallback(async (orderId) => {
+    const { error } = await supabase
+      .from('order_items')
+      .update({
+        mandata_stato: 'in_preparazione',
+        mandata_inviata_at: new Date().toISOString(),
+      })
+      .eq('order_id', orderId)
+      .eq('categoria', 'bar')
+      .eq('mandata', 2)
+      .eq('mandata_stato', 'in_attesa')
+    if (error) throw error
+  }, [])
+
+  // -----------------------------------------------------------
+  // PAGAMENTI — storno / conferma cassa
+  // -----------------------------------------------------------
+
+  // Storna un ordine confermato. Tutto cio' che non e' gia' stato
+  // consegnato va in pausa (badge IN PAUSA in cucina/bar).
+  //   tipoPagamentoOverride: se passato, sostituisce tipo_pagamento.
+  //     Es. ordine bancomat -> "passa a contanti" => storna + setta 'contanti'.
+  const stornaOrdine = useCallback(async (orderId, note = null, tipoPagamentoOverride = null) => {
+    const patch = {
+      stato: 'stornato',
+      stornato_at: new Date().toISOString(),
+      storno_note: note,
+    }
+    if (tipoPagamentoOverride) patch.tipo_pagamento = tipoPagamentoOverride
+
+    const { error: e1 } = await supabase
+      .from('orders')
+      .update(patch)
+      .eq('id', orderId)
+    if (e1) throw e1
+
+    const { error: e2 } = await supabase
+      .from('order_items')
+      .update({ mandata_stato: 'in_pausa' })
+      .eq('order_id', orderId)
+      .neq('mandata_stato', 'consegnata')
+    if (e2) throw e2
+  }, [])
+
+  // Cassa incassa un ordine in 'attesa_cassa' o 'stornato':
+  //   stato -> 'confermato'
+  //   items in_pausa -> in_attesa (rientrano in coda cucina/bar)
+  const confermaPagamentoCassa = useCallback(async (orderId, tipoPagamento = 'contanti') => {
+    const { error: e1 } = await supabase
+      .from('orders')
+      .update({
+        stato: 'confermato',
+        tipo_pagamento: tipoPagamento,
+        pagato_at: new Date().toISOString(),
+        stornato_at: null,
+      })
+      .eq('id', orderId)
+    if (e1) throw e1
+
+    const { error: e2 } = await supabase
+      .from('order_items')
+      .update({ mandata_stato: 'in_attesa' })
+      .eq('order_id', orderId)
+      .eq('mandata_stato', 'in_pausa')
+    if (e2) throw e2
+  }, [])
+
+  // -----------------------------------------------------------
+  // CHIUSURA & UTILS
+  // -----------------------------------------------------------
+
+  const completaOrdine = useCallback(async (orderId) => {
     const { error } = await supabase
       .from('orders')
-      .update({ stato: 'pagato', pagato_at: new Date().toISOString() })
+      .update({ stato: 'completato' })
       .eq('id', orderId)
     if (error) throw error
   }, [])
@@ -194,23 +366,32 @@ export function useOrders({ autoload = false } = {}) {
   }, [])
 
   useEffect(() => {
-    if (autoload) fetchOpenOrders()
-  }, [autoload, fetchOpenOrders])
+    if (autoload) fetchOrdiniAttivi()
+  }, [autoload, fetchOrdiniAttivi])
 
   return {
     orders,
     loading,
     error,
-    fetchOpenOrders,
-    fetchPaidOrders,
+    // fetchers
+    fetchOrdiniAttivi,
+    fetchCassaQueue,
     fetchAllOrders,
+    fetchImpostazioni,
+    saveImpostazione,
+    // mutazioni ordini
     createOrder,
     addItemsToOrder,
-    markItemsReady,
-    markPietanzaReady,
-    markTableCategoryReady,
-    markOrderPaid,
+    // mandate
+    markMandataReady,
+    markMandataConsegnata,
+    sbloccaBarMandata2,
+    // pagamenti
+    stornaOrdine,
+    confermaPagamentoCassa,
+    // utility
+    completaOrdine,
     deleteOrder,
-    setOrders
+    setOrders,
   }
 }

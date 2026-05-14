@@ -4,9 +4,14 @@ import { useOrders } from '../hooks/useOrders.js'
 import MenuSelector from '../components/MenuSelector.jsx'
 import TableBadge from '../components/TableBadge.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
-import { getServizioAttuale, getDataServizio, dataLocaleToUtcRange } from '../utils/servizio.js'
+import { getServizioAttuale } from '../utils/servizio.js'
+import {
+  groupByMandata,
+  getNumeriMandata,
+  getStatoMandataDisplay,
+} from '../utils/mandateUtils.js'
 
-// -------------------- AUDIO (Web Audio API, niente file esterni) --------------------
+// -------------------- AUDIO (Web Audio API) --------------------
 
 let audioCtx = null
 function getAudioCtx() {
@@ -21,42 +26,35 @@ function playReadyBeep() {
   const ctx = getAudioCtx()
   if (!ctx) return
   if (ctx.state === 'suspended') ctx.resume().catch(() => {})
-
   const beep = (freq, whenSec, durSec) => {
     const osc = ctx.createOscillator()
     const gain = ctx.createGain()
-    osc.connect(gain)
-    gain.connect(ctx.destination)
-    osc.frequency.value = freq
-    osc.type = 'sine'
+    osc.connect(gain); gain.connect(ctx.destination)
+    osc.frequency.value = freq; osc.type = 'sine'
     const t0 = ctx.currentTime + whenSec
     gain.gain.setValueAtTime(0.0001, t0)
     gain.gain.exponentialRampToValueAtTime(0.18, t0 + 0.02)
     gain.gain.exponentialRampToValueAtTime(0.0001, t0 + durSec)
-    osc.start(t0)
-    osc.stop(t0 + durSec + 0.05)
+    osc.start(t0); osc.stop(t0 + durSec + 0.05)
   }
-  beep(880,  0,    0.20)  // A5
-  beep(1318, 0.18, 0.24)  // E6
+  beep(880,  0,    0.20)
+  beep(1318, 0.18, 0.24)
 }
 
-// -------------------- HELPER STATO TAVOLO --------------------
+// -------------------- HELPER STATI ORDINE --------------------
 
-function statoTavolo(items) {
-  if (!items || items.length === 0) return 'rosso'
-  const cuc = items.filter(i => i.categoria === 'cucina')
-  const bar = items.filter(i => i.categoria === 'bar')
-  const cucOk = cuc.length === 0 || cuc.every(i => i.pronto)
-  const barOk = bar.length === 0 || bar.every(i => i.pronto)
-  if (cucOk && barOk) return 'verde'
-  if (cucOk || barOk) return 'giallo'
-  return 'rosso'
-}
-
-const STATO_BORDO = {
-  verde:  'border-l-green-500  bg-green-900/20',
-  giallo: 'border-l-yellow-500 bg-yellow-900/15',
-  rosso:  'border-l-red-500    bg-red-900/15',
+// Stato "globale" di un ordine per il cameriere, dal punto di vista visivo.
+//   'pronto'   -> almeno una mandata ha stato 'pronta' (da portare)
+//   'attivo'   -> tutto in preparazione/attesa
+//   'consegnato' -> tutte le mandate consegnate
+function statoCameriereOrdine(items) {
+  if (!items || items.length === 0) return 'attivo'
+  const tutti = items
+  const tuttiConsegnati = tutti.every(i => i.mandata_stato === 'consegnata')
+  if (tuttiConsegnati) return 'consegnato'
+  const haPronto = tutti.some(i => i.mandata_stato === 'pronta')
+  if (haPronto) return 'pronto'
+  return 'attivo'
 }
 
 const TICK_MS = 30_000
@@ -64,11 +62,14 @@ const TICK_MS = 30_000
 // -------------------- CAMERIERE PAGE --------------------
 
 export default function CamerierePage({ user, onLogout }) {
-  const [view, setView] = useState('list') // list | new | detail
+  const [view, setView] = useState('list') // 'list' | 'new' | 'detail' | 'payment'
   const [selectedId, setSelectedId] = useState(null)
-  const [addingForId, setAddingForId] = useState(null)
   const [menu, setMenu] = useState([])
   const [menuLoading, setMenuLoading] = useState(false)
+
+  // Stato bozza per il flusso "nuovo ordine"
+  const [draft, setDraft] = useState(null)
+  // { tavolo, persone, nomeCliente, note, qty } dove qty = { itemId: { quantita, mandata } }
 
   const [soundEnabled, setSoundEnabled] = useState(() => {
     try { return JSON.parse(localStorage.getItem('cameriereSound') ?? 'true') }
@@ -78,34 +79,21 @@ export default function CamerierePage({ user, onLogout }) {
     localStorage.setItem('cameriereSound', JSON.stringify(soundEnabled))
   }, [soundEnabled])
 
-  // Tracking "consegnati" lato device
-  const [consegnatiIds, setConsegnatiIdsRaw] = useState(() => {
-    try { return new Set(JSON.parse(localStorage.getItem('cameriereConsegnati') ?? '[]')) }
-    catch { return new Set() }
-  })
-  const persistConsegnati = (s) => {
-    localStorage.setItem('cameriereConsegnati', JSON.stringify([...s]))
-  }
-  const segnaConsegnato = (id) => {
-    const s = new Set(consegnatiIds); s.add(id); setConsegnatiIdsRaw(s); persistConsegnati(s)
-  }
-  const annullaConsegnato = (id) => {
-    const s = new Set(consegnatiIds); s.delete(id); setConsegnatiIdsRaw(s); persistConsegnati(s)
-  }
-
   const {
-    orders, fetchPaidOrders,
-    createOrder, addItemsToOrder
+    orders, fetchOrdiniAttivi,
+    createOrder, addItemsToOrder,
+    markMandataConsegnata, sbloccaBarMandata2,
+    stornaOrdine,
   } = useOrders()
 
   const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
   const refetchOrders = useCallback(
-    () => fetchPaidOrders(servizioCorrente),
-    [fetchPaidOrders, servizioCorrente]
+    () => fetchOrdiniAttivi(servizioCorrente),
+    [fetchOrdiniAttivi, servizioCorrente]
   )
   useEffect(() => { refetchOrders() }, [refetchOrders])
 
-  // Auto-switch pranzo/cena a 16:00: poll ogni 60s, se cambia → refetch automatico
+  // Auto-switch pranzo/cena
   useEffect(() => {
     const interval = setInterval(() => {
       const nuovo = getServizioAttuale()
@@ -137,69 +125,86 @@ export default function CamerierePage({ user, onLogout }) {
     return () => { supabase.removeChannel(channel) }
   }, [refetchOrders])
 
-  // Notifica sonora quando un ordine diventa verde (transizione)
-  const lastReadyRef = useRef(null) // Set<id>
+  // Notifica sonora: quando un ordine ha NUOVE mandate 'pronte'
+  const lastReadyRef = useRef(null)
   useEffect(() => {
-    const ready = new Set(
-      orders
-        .filter(o => statoTavolo(o.order_items || []) === 'verde')
-        .map(o => o.id)
-    )
+    const readySet = new Set()
+    for (const o of orders) {
+      const groups = groupByMandata(o.order_items || [])
+      for (const m of Object.keys(groups)) {
+        if (getStatoMandataDisplay(groups[m]) === 'pronta') {
+          readySet.add(`${o.id}::${m}`)
+        }
+      }
+    }
     if (lastReadyRef.current === null) {
-      // primo render: solo registro lo stato, niente suono
-      lastReadyRef.current = ready
+      lastReadyRef.current = readySet
       return
     }
-    const newReady = [...ready].filter(id => !lastReadyRef.current.has(id))
-    if (newReady.length > 0 && soundEnabled) playReadyBeep()
-    lastReadyRef.current = ready
+    const fresh = [...readySet].filter(k => !lastReadyRef.current.has(k))
+    if (fresh.length > 0 && soundEnabled) playReadyBeep()
+    lastReadyRef.current = readySet
   }, [orders, soundEnabled])
 
-  // Tick per aggiornare i timer ogni 30s
+  // Tick per i minuti
   const [, setTick] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setTick(x => x + 1), TICK_MS)
     return () => clearInterval(t)
   }, [])
 
-  // -------------------- Protezioni navigazione (invariate) --------------------
-
+  // Protezioni navigazione
   useEffect(() => {
-    if (view !== 'new') return
+    if (view !== 'new' && view !== 'payment') return
     const onBeforeUnload = (e) => {
       e.preventDefault()
       e.returnValue = 'Hai un ordine in corso. Sei sicuro di voler uscire?'
-      return 'Hai un ordine in corso. Sei sicuro di voler uscire?'
+      return e.returnValue
     }
     window.addEventListener('beforeunload', onBeforeUnload)
     return () => window.removeEventListener('beforeunload', onBeforeUnload)
   }, [view])
 
   useEffect(() => {
-    if (view !== 'new') return
-    window.history.pushState(null, '', window.location.href)
-    const onPop = () => {
-      const ok = window.confirm('Hai un ordine in corso. Vuoi annullare e tornare indietro?')
-      if (ok) setView('list')
-      else window.history.pushState(null, '', window.location.href)
+    if (view === 'list') {
+      window.history.pushState(null, '', window.location.href)
+      const onPop = () => {
+        const ok = window.confirm("Vuoi uscire dall'app?")
+        if (ok) window.history.back()
+        else window.history.pushState(null, '', window.location.href)
+      }
+      window.addEventListener('popstate', onPop)
+      return () => window.removeEventListener('popstate', onPop)
     }
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
+    if (view === 'new' || view === 'payment') {
+      window.history.pushState(null, '', window.location.href)
+      const onPop = () => {
+        const ok = window.confirm('Hai un ordine in corso. Vuoi annullare e tornare indietro?')
+        if (ok) { setDraft(null); setView('list') }
+        else window.history.pushState(null, '', window.location.href)
+      }
+      window.addEventListener('popstate', onPop)
+      return () => window.removeEventListener('popstate', onPop)
+    }
+    if (view === 'detail') {
+      window.history.pushState(null, '', window.location.href)
+      const onPop = () => { setView('list'); setSelectedId(null) }
+      window.addEventListener('popstate', onPop)
+      return () => window.removeEventListener('popstate', onPop)
+    }
   }, [view])
 
-  useEffect(() => {
-    if (view !== 'list') return
-    window.history.pushState(null, '', window.location.href)
-    const onPop = () => {
-      const ok = window.confirm("Vuoi uscire dall'app?")
-      if (ok) window.history.back()
-      else window.history.pushState(null, '', window.location.href)
-    }
-    window.addEventListener('popstate', onPop)
-    return () => window.removeEventListener('popstate', onPop)
-  }, [view])
-
-  // -------------------- Render --------------------
+  const onLeftAction = view !== 'list' && (
+    <button
+      onClick={() => {
+        if (view === 'payment') { setView('new'); return }
+        setView('list'); setSelectedId(null); setDraft(null)
+      }}
+      className="px-3 py-1 rounded-lg bg-white/20 text-sm font-semibold"
+    >
+      ← Indietro
+    </button>
+  )
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -210,47 +215,72 @@ export default function CamerierePage({ user, onLogout }) {
         onLogout={onLogout}
         soundEnabled={soundEnabled}
         onToggleSound={() => {
-          // Tap utente: opportunità per inizializzare AudioContext
           if (!soundEnabled) {
             const ctx = getAudioCtx()
             if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {})
           }
           setSoundEnabled(s => !s)
         }}
-        leftAction={view !== 'list' && (
-          <button
-            onClick={() => { setView('list'); setSelectedId(null); setAddingForId(null) }}
-            className="px-3 py-1 rounded-lg bg-white/20 text-sm font-semibold"
-          >
-            ← Indietro
-          </button>
-        )}
+        leftAction={onLeftAction}
       />
 
       <main className="flex-1 p-4">
         {view === 'list' && (
           <ListaTavoli
             orders={orders}
-            consegnatiIds={consegnatiIds}
             onNew={() => setView('new')}
-            onSelect={(id) => { setSelectedId(id); setAddingForId(null); setView('detail') }}
-            onQuickAdd={(id) => { setSelectedId(id); setAddingForId(id); setView('detail') }}
-            onConsegnato={segnaConsegnato}
-            onAnnullaConsegna={annullaConsegnato}
+            onSelect={(id) => { setSelectedId(id); setView('detail') }}
           />
         )}
         {view === 'new' && (
           <NuovoOrdine
             menu={menu}
+            initialDraft={draft}
             onRefresh={loadMenu}
             refreshing={menuLoading}
-            onCreate={async (tavolo, persone, items, note, extra) => {
-              await createOrder(tavolo, persone, items, note, {
-                ...extra,
-                cameriere_nome: user.nome,
-              })
-              await refetchOrders()
-              setView('list')
+            onProceedToPayment={(d) => {
+              setDraft(d)
+              setView('payment')
+            }}
+          />
+        )}
+        {view === 'payment' && draft && (
+          <ScegliPagamento
+            draft={draft}
+            menu={menu}
+            onBack={() => setView('new')}
+            onConfirm={async (pagamento) => {
+              const servizio = getServizioAttuale()
+              const itemsArr = Object.entries(draft.qty).map(([id, val]) => {
+                const menuItem = menu.find(m => m.id === id)
+                return menuItem ? {
+                  menuItem,
+                  quantita: val.quantita,
+                  mandata: val.mandata,
+                } : null
+              }).filter(Boolean)
+
+              try {
+                await createOrder({
+                  tavolo: parseInt(draft.tavolo, 10),
+                  persone: Math.max(1, parseInt(draft.persone, 10) || 1),
+                  nomeCliente: draft.nomeCliente.trim(),
+                  items: itemsArr,
+                  pagamento,
+                  note: draft.note || null,
+                  servizio,
+                  cameriereNome: user.nome,
+                  cameriereId: user.id,
+                })
+                await refetchOrders()
+                setDraft(null)
+                setView('list')
+                if (pagamento === 'contanti') {
+                  alert(`Invia il cliente in cassa con:\nTav. ${draft.tavolo} · ${draft.nomeCliente}`)
+                }
+              } catch (e) {
+                alert('Errore creazione ordine: ' + (e.message || e))
+              }
             }}
           />
         )}
@@ -258,10 +288,23 @@ export default function CamerierePage({ user, onLogout }) {
           <DettaglioOrdine
             orderId={selectedId}
             menu={menu}
-            initialAdding={addingForId === selectedId}
             onAddItems={async (items) => {
               await addItemsToOrder(selectedId, items)
               await refetchOrders()
+            }}
+            onMandataConsegnata={async (mandataNum, categoria) => {
+              await markMandataConsegnata(selectedId, mandataNum, categoria)
+              await refetchOrders()
+            }}
+            onSbloccaBarM2={async () => {
+              await sbloccaBarMandata2(selectedId)
+              await refetchOrders()
+            }}
+            onStorna={async (note, tipoPagamentoOverride) => {
+              await stornaOrdine(selectedId, note, tipoPagamentoOverride)
+              await refetchOrders()
+              setView('list')
+              setSelectedId(null)
             }}
           />
         )}
@@ -308,24 +351,19 @@ function Header({ color, nome, ruolo, onLogout, leftAction, soundEnabled, onTogg
 
 // -------------------- LISTA TAVOLI --------------------
 
-function ListaTavoli({ orders, consegnatiIds, onNew, onSelect, onQuickAdd,
-                      onConsegnato, onAnnullaConsegna }) {
-  const verdi   = []
-  const gialli  = []
-  const rossi   = []
-  const consegnati = []
+function ListaTavoli({ orders, onNew, onSelect }) {
+  const pronti  = []
+  const attivi  = []
+  const inCassa = []
+  const stornati = []
 
   for (const o of orders) {
-    const items = o.order_items || []
-    const stato = statoTavolo(items)
-    if (stato === 'verde') {
-      if (consegnatiIds.has(o.id)) consegnati.push(o)
-      else verdi.push(o)
-    } else if (stato === 'giallo') gialli.push(o)
-    else rossi.push(o)
+    if (o.stato === 'attesa_cassa') { inCassa.push(o); continue }
+    if (o.stato === 'stornato')     { stornati.push(o); continue }
+    const stato = statoCameriereOrdine(o.order_items || [])
+    if (stato === 'pronto') pronti.push(o)
+    else attivi.push(o)
   }
-
-  const [storicoAperto, setStoricoAperto] = useState(false)
 
   return (
     <div className="space-y-4">
@@ -333,10 +371,10 @@ function ListaTavoli({ orders, consegnatiIds, onNew, onSelect, onQuickAdd,
         + Nuovo Tavolo
       </button>
 
-      {verdi.length > 0 && (
+      {pronti.length > 0 && (
         <div className="bg-green-700 text-white px-4 py-3 rounded-xl font-bold
                         text-center shadow-lg animate-pulse">
-          🟢 {verdi.length} tavol{verdi.length === 1 ? 'o' : 'i'} pront{verdi.length === 1 ? 'o' : 'i'} da portare!
+          🟢 {pronti.length} mandat{pronti.length === 1 ? 'a pronta' : 'e pronte'} da portare!
         </div>
       )}
 
@@ -344,71 +382,25 @@ function ListaTavoli({ orders, consegnatiIds, onNew, onSelect, onQuickAdd,
         <p className="text-center opacity-60 py-8">Nessun ordine</p>
       )}
 
-      <SezioneCards
-        titolo="🟢 Pronti da portare"
-        orders={verdi}
-        emptyHidden
-        onSelect={onSelect}
-        onQuickAdd={onQuickAdd}
-        onConsegnato={onConsegnato}
-      />
-      <SezioneCards
-        titolo="🟡 Parzialmente pronti"
-        orders={gialli}
-        emptyHidden
-        onSelect={onSelect}
-        onQuickAdd={onQuickAdd}
-      />
-      <SezioneCards
-        titolo="🔴 In preparazione"
-        orders={rossi}
-        emptyHidden
-        onSelect={onSelect}
-        onQuickAdd={onQuickAdd}
-      />
-
-      {consegnati.length > 0 && (
-        <div>
-          <button
-            onClick={() => setStoricoAperto(s => !s)}
-            className="w-full flex items-center justify-between bg-pannello border
-                       border-bordo rounded-xl px-4 py-3 font-bold"
-          >
-            <span>✅ Consegnati ({consegnati.length})</span>
-            <span className="opacity-70">{storicoAperto ? '▲' : '▼'}</span>
-          </button>
-          {storicoAperto && (
-            <div className="mt-3 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
-                            mobile-landscape:grid-cols-2 gap-3">
-              {consegnati.map(o => (
-                <CompactOrderCard
-                  key={o.id}
-                  order={o}
-                  consegnato
-                  onSelect={onSelect}
-                  onAnnullaConsegna={onAnnullaConsegna}
-                />
-              ))}
-            </div>
-          )}
-        </div>
-      )}
+      <SezioneCards titolo="🟢 Pronti da portare"  orders={pronti}   onSelect={onSelect} />
+      <SezioneCards titolo="🟡 In preparazione"    orders={attivi}   onSelect={onSelect} />
+      <SezioneCards titolo="💵 In attesa cassa"    orders={inCassa}  onSelect={onSelect} variant="warning" />
+      <SezioneCards titolo="⚠️ Stornati"           orders={stornati} onSelect={onSelect} variant="danger" />
     </div>
   )
 }
 
-function SezioneCards({ titolo, orders, emptyHidden, ...handlers }) {
-  if (emptyHidden && orders.length === 0) return null
+function SezioneCards({ titolo, orders, onSelect, variant }) {
+  if (orders.length === 0) return null
   return (
     <div>
       <h3 className="font-bold mb-2 text-base">
-        {titolo}{' '}
-        <span className="text-sm font-normal opacity-60">({orders.length})</span>
+        {titolo} <span className="text-sm font-normal opacity-60">({orders.length})</span>
       </h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
                       mobile-landscape:grid-cols-2 gap-3">
         {orders.map(o => (
-          <CompactOrderCard key={o.id} order={o} {...handlers} />
+          <CompactOrderCard key={o.id} order={o} onSelect={onSelect} variant={variant} />
         ))}
       </div>
     </div>
@@ -417,79 +409,95 @@ function SezioneCards({ titolo, orders, emptyHidden, ...handlers }) {
 
 // -------------------- COMPACT ORDER CARD --------------------
 
-function CompactOrderCard({ order, consegnato = false,
-                            onSelect, onQuickAdd, onConsegnato, onAnnullaConsegna }) {
+function CompactOrderCard({ order, onSelect, variant }) {
   const items = order.order_items || []
-  const stato = statoTavolo(items)
-  const cuc = items.filter(i => i.categoria === 'cucina')
-  const bar = items.filter(i => i.categoria === 'bar')
-  const cucOk = cuc.length === 0 || cuc.every(i => i.pronto)
-  const barOk = bar.length === 0 || bar.every(i => i.pronto)
+  const cucinaItems = items.filter(i => i.categoria === 'cucina')
+  const barItems    = items.filter(i => i.categoria === 'bar')
+  const cucinaGroups = groupByMandata(cucinaItems)
+  const barGroups    = groupByMandata(barItems)
+  const cucinaNumeri = getNumeriMandata(cucinaItems)
+  const barNumeri    = getNumeriMandata(barItems)
 
   const minuti = Math.max(0, Math.floor((Date.now() - new Date(order.created_at)) / 60000))
   const ora = new Date(order.created_at)
     .toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
 
-  const bordoCls = consegnato
-    ? 'border-l-blue-500 bg-blue-900/15'
-    : STATO_BORDO[stato]
-  const pulseCls = !consegnato && stato === 'verde' ? 'animate-pulse' : ''
+  // Bar M2 bloccata visibile?
+  const barM2Bloccata = barGroups[2] && barGroups[2].every(i => i.mandata_stato === 'in_attesa')
+
+  let bordo = 'border-l-yellow-500 bg-yellow-900/15'
+  let pulse = ''
+  if (variant === 'warning') bordo = 'border-l-amber-500 bg-amber-900/15'
+  else if (variant === 'danger') bordo = 'border-l-red-500 bg-red-900/15'
+  else {
+    const stato = statoCameriereOrdine(items)
+    if (stato === 'pronto') { bordo = 'border-l-green-500 bg-green-900/20'; pulse = 'animate-pulse' }
+    else if (stato === 'consegnato') { bordo = 'border-l-blue-500 bg-blue-900/15' }
+  }
+
+  const renderRiepilogoMandate = (numeri, groups) => {
+    if (numeri.length === 0) return null
+    return (
+      <span className="text-xs">
+        {numeri.map(n => {
+          const s = getStatoMandataDisplay(groups[n])
+          let icon = '⏳'
+          if (s === 'in_pausa')      icon = '⏸️'
+          else if (s === 'consegnata') icon = '✅'
+          else if (s === 'pronta')     icon = '🟢'
+          else if (s === 'in_preparazione') icon = '🔥'
+          else if (groups[n].every(i => i.mandata_stato === 'in_attesa') && groups[n].some(i => i.categoria === 'bar' && i.mandata === 2)) icon = '🔒'
+          return <span key={n} className="ml-1">M{n}{icon}</span>
+        })}
+      </span>
+    )
+  }
 
   return (
     <div
       onClick={() => onSelect && onSelect(order.id)}
-      className={`relative card border-l-4 ${bordoCls} ${pulseCls}
+      className={`relative card border-l-4 ${bordo} ${pulse}
                   cursor-pointer active:scale-[0.98] transition-transform`}
     >
-      {/* Top-right action button */}
-      {!consegnato && onQuickAdd && (
-        <button
-          onClick={(e) => { e.stopPropagation(); onQuickAdd(order.id) }}
-          aria-label="Aggiungi item al tavolo"
-          title="Aggiungi item al tavolo"
-          className="absolute top-2 right-2 w-8 h-8 rounded-full bg-cameriere
-                     text-white font-bold text-lg flex items-center justify-center
-                     active:scale-95"
-        >
-          +
-        </button>
-      )}
-
-      <div className="flex items-center gap-3 flex-wrap pr-10">
+      <div className="flex items-center gap-2 flex-wrap mb-1">
         <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="md" />
-        {order.turno >= 2 && (
-          <span className="text-sm font-bold text-yellow-300 px-2 py-0.5
-                           rounded bg-yellow-900/40 border border-yellow-700">
-            T{order.turno}
+        {order.nome_cliente && (
+          <span className="text-sm font-bold">· {order.nome_cliente}</span>
+        )}
+        {order.tipo_pagamento === 'bancomat' && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-blue-900/50 border border-blue-700">
+            💳
           </span>
         )}
-        <span className="text-sm opacity-80">{order.n_persone} pers.</span>
-        <span className="text-base">
-          🍳{cucOk ? '✅' : '⏳'} 🍺{barOk ? '✅' : '⏳'}
-        </span>
-        <span className="text-sm opacity-80">⏱ {minuti} min</span>
-        <span className="ml-auto font-bold text-lg text-green-400">
+        {order.tipo_pagamento === 'contanti' && (
+          <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-900/50 border border-emerald-700">
+            💵
+          </span>
+        )}
+        {order.stato === 'attesa_cassa' && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-700 text-white uppercase tracking-wide">
+            in cassa
+          </span>
+        )}
+        {order.stato === 'stornato' && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-700 text-white uppercase tracking-wide">
+            stornato
+          </span>
+        )}
+        <span className="ml-auto font-bold text-base text-green-400">
           € {Number(order.totale).toFixed(2)}
         </span>
       </div>
 
-      <div className="mt-1 flex items-center justify-between">
-        <span className="text-xs text-gray-400">{ora}</span>
-        {!consegnato && stato === 'verde' && onConsegnato && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onConsegnato(order.id) }}
-            className="text-xs px-2 py-1 rounded-lg bg-green-700 font-semibold"
-          >
-            ✓ Consegnato
-          </button>
-        )}
-        {consegnato && onAnnullaConsegna && (
-          <button
-            onClick={(e) => { e.stopPropagation(); onAnnullaConsegna(order.id) }}
-            className="text-xs px-2 py-1 rounded-lg bg-pannello border border-bordo"
-          >
-            ↩ Riapri
-          </button>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
+        <span>🍳 {renderRiepilogoMandate(cucinaNumeri, cucinaGroups) || '—'}</span>
+        <span>🍺 {renderRiepilogoMandate(barNumeri, barGroups) || '—'}</span>
+      </div>
+
+      <div className="mt-1 flex items-center justify-between text-xs opacity-70">
+        <span>{ora} · ⏱ {minuti} min</span>
+        {barM2Bloccata && (
+          <span className="text-yellow-400 font-semibold">🔒 Caffè/amari in attesa</span>
         )}
       </div>
     </div>
@@ -498,19 +506,19 @@ function CompactOrderCard({ order, consegnato = false,
 
 // -------------------- VISTA NUOVO ORDINE --------------------
 
-function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
-  const [tavolo, setTavolo] = useState('')
-  const [persone, setPersone] = useState('1')
-  const [note, setNote] = useState('')
-  const [qty, setQty] = useState({})
-  const [submitting, setSubmitting] = useState(false)
+function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refreshing }) {
+  const [tavolo, setTavolo] = useState(initialDraft?.tavolo ?? '')
+  const [persone, setPersone] = useState(initialDraft?.persone ?? '1')
+  const [nomeCliente, setNomeCliente] = useState(initialDraft?.nomeCliente ?? '')
+  const [note, setNote] = useState(initialDraft?.note ?? '')
+  const [qty, setQty] = useState(initialDraft?.qty ?? {})
   const tavoloRef = useRef(null)
 
   const itemsArr = useMemo(() => {
     return Object.entries(qty)
-      .map(([id, quantita]) => {
+      .map(([id, val]) => {
         const menuItem = menu.find(m => m.id === id)
-        return menuItem ? { menuItem, quantita } : null
+        return menuItem ? { menuItem, quantita: val.quantita, mandata: val.mandata } : null
       })
       .filter(Boolean)
   }, [qty, menu])
@@ -519,64 +527,14 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
     (s, it) => s + Number(it.menuItem.prezzo) * it.quantita, 0
   )
 
-  const canSubmit = tavolo && Number(tavolo) > 0 && itemsArr.length > 0 && !submitting
+  const canSubmit =
+    tavolo && Number(tavolo) > 0
+    && nomeCliente.trim().length > 0
+    && itemsArr.length > 0
 
-  const submit = async () => {
+  const submit = () => {
     if (!canSubmit) return
-    const numTavolo = parseInt(tavolo, 10)
-    const servizio = getServizioAttuale()
-    const dataLocale = getDataServizio()
-
-    // 1) Calcolo turno: cerco il MAX(turno) per questo tavolo+servizio+data
-    let nuovoTurno = 1
-    try {
-      const { startUTC, endUTC } = dataLocaleToUtcRange(dataLocale)
-      const { data: prev, error: errMax } = await supabase
-        .from('orders')
-        .select('turno')
-        .eq('numero_tavolo', numTavolo)
-        .eq('servizio', servizio)
-        .gte('created_at', startUTC)
-        .lt('created_at', endUTC)
-        .order('turno', { ascending: false })
-        .limit(1)
-      if (errMax) throw errMax
-      const ultimoTurno = prev?.[0]?.turno ?? 0
-      if (ultimoTurno >= 1) {
-        const volte = ultimoTurno === 1 ? 'volta' : 'volte'
-        const okTurno = window.confirm(
-          `⚠️ Il tavolo ${numTavolo} è già stato utilizzato ${ultimoTurno} ${volte} in questo servizio (${servizio.toUpperCase()}).\n\nQuesto sarà il turno ${ultimoTurno + 1}. Confermi?`
-        )
-        if (!okTurno) {
-          setTimeout(() => tavoloRef.current?.focus(), 50)
-          return
-        }
-        nuovoTurno = ultimoTurno + 1
-      }
-    } catch (e) {
-      alert('Errore controllo turno: ' + (e.message || e))
-      return
-    }
-
-    // 2) Conferma pagamento
-    const ok = window.confirm(`Pagamento ricevuto: € ${totale.toFixed(2)} — Confermi?`)
-    if (!ok) return
-
-    // 3) Crea ordine con servizio + turno
-    setSubmitting(true)
-    try {
-      await onCreate(
-        numTavolo,
-        Math.max(1, parseInt(persone, 10) || 1),
-        itemsArr,
-        note || null,
-        { servizio, turno: nuovoTurno }
-      )
-    } catch (e) {
-      alert('Errore creazione ordine: ' + (e.message || e))
-    } finally {
-      setSubmitting(false)
-    }
+    onProceedToPayment({ tavolo, persone, nomeCliente, note, qty })
   }
 
   return (
@@ -617,6 +575,19 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
           />
         </label>
       </div>
+
+      <label className="block mb-3">
+        <span className="text-sm opacity-80">Nome cliente *</span>
+        <input
+          type="text"
+          value={nomeCliente}
+          onChange={e => setNomeCliente(e.target.value)}
+          className="input-base mt-1"
+          placeholder="Nome del capotavola (es. Mattia)"
+          required
+        />
+      </label>
+
       <label className="block mb-3">
         <span className="text-sm opacity-80">Note (opzionali)</span>
         <input
@@ -640,28 +611,126 @@ function NuovoOrdine({ menu, onCreate, onRefresh, refreshing }) {
           disabled={!canSubmit}
           className="btn-success w-full text-lg"
         >
-          {submitting ? 'Invio…' : 'Invia Ordine'}
+          Avanti → Pagamento
         </button>
       </div>
     </div>
   )
 }
 
+// -------------------- SCELTA PAGAMENTO --------------------
+
+function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
+  const [busy, setBusy] = useState(false)
+
+  const itemsArr = useMemo(() => {
+    return Object.entries(draft.qty)
+      .map(([id, val]) => {
+        const menuItem = menu.find(m => m.id === id)
+        return menuItem ? { menuItem, quantita: val.quantita, mandata: val.mandata } : null
+      })
+      .filter(Boolean)
+  }, [draft, menu])
+
+  const totale = itemsArr.reduce(
+    (s, it) => s + Number(it.menuItem.prezzo) * it.quantita, 0
+  )
+
+  const handleBancomat = async () => {
+    const ok = window.confirm(`Pagamento di € ${totale.toFixed(2)} ricevuto con bancomat?`)
+    if (!ok) return
+    setBusy(true)
+    try { await onConfirm('bancomat') } finally { setBusy(false) }
+  }
+
+  const handleContanti = async () => {
+    setBusy(true)
+    try { await onConfirm('contanti') } finally { setBusy(false) }
+  }
+
+  return (
+    <div className="space-y-4 pb-6">
+      <h2 className="text-xl font-bold">Riepilogo ordine</h2>
+
+      <div className="card space-y-1">
+        <p className="text-sm opacity-80">
+          Tav. <strong>{draft.tavolo}</strong> · {draft.persone} pers. · <strong>{draft.nomeCliente}</strong>
+        </p>
+        {draft.note && (
+          <p className="text-sm bg-yellow-900/30 border border-yellow-700 rounded-lg p-2">
+            Note: {draft.note}
+          </p>
+        )}
+        <ul className="text-sm divide-y divide-bordo">
+          {itemsArr.map(it => (
+            <li key={it.menuItem.id} className="py-1 flex items-center gap-2">
+              <span className="text-[10px] px-2 py-0.5 rounded-full bg-cameriere/40 border border-cameriere">
+                M{it.mandata}
+              </span>
+              <span className="flex-1">{it.menuItem.nome}</span>
+              <span className="opacity-80">× {it.quantita}</span>
+              <span className="font-semibold">
+                € {(Number(it.menuItem.prezzo) * it.quantita).toFixed(2)}
+              </span>
+            </li>
+          ))}
+        </ul>
+        <div className="pt-2 border-t border-bordo flex items-center justify-between">
+          <span className="text-sm opacity-80">Totale</span>
+          <span className="text-2xl font-bold text-green-400">
+            € {totale.toFixed(2)}
+          </span>
+        </div>
+      </div>
+
+      <h3 className="font-bold text-lg mt-2">Metodo di pagamento</h3>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        <button
+          disabled={busy}
+          onClick={handleBancomat}
+          className="card bg-blue-900/30 border-2 border-blue-700 hover:bg-blue-900/50
+                     min-h-[6rem] flex flex-col items-center justify-center text-xl font-bold"
+        >
+          💳 BANCOMAT
+          <span className="text-xs font-normal opacity-80 mt-1">
+            Incasso immediato, parte a cucina/bar
+          </span>
+        </button>
+        <button
+          disabled={busy}
+          onClick={handleContanti}
+          className="card bg-emerald-900/30 border-2 border-emerald-700 hover:bg-emerald-900/50
+                     min-h-[6rem] flex flex-col items-center justify-center text-xl font-bold"
+        >
+          💵 CONTANTI
+          <span className="text-xs font-normal opacity-80 mt-1">
+            Cliente in cassa, attende incasso
+          </span>
+        </button>
+      </div>
+
+      <button onClick={onBack} disabled={busy} className="btn-neutral w-full">
+        ← Cambia ordine
+      </button>
+    </div>
+  )
+}
+
 // -------------------- DETTAGLIO ORDINE --------------------
 
-function DettaglioOrdine({ orderId, menu, onAddItems, initialAdding = false }) {
+function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaBarM2, onStorna }) {
   const [order, setOrder] = useState(null)
-  const [adding, setAdding] = useState(initialAdding)
+  const [adding, setAdding] = useState(false)
   const [qty, setQty] = useState({})
   const [busy, setBusy] = useState(false)
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const { data } = await supabase
       .from('orders').select('*, order_items(*)').eq('id', orderId).single()
     setOrder(data)
-  }
+  }, [orderId])
 
-  useEffect(() => { load() }, [orderId])
+  useEffect(() => { load() }, [load])
 
   useEffect(() => {
     const channel = supabase
@@ -674,17 +743,18 @@ function DettaglioOrdine({ orderId, menu, onAddItems, initialAdding = false }) {
         () => load())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [orderId])
+  }, [orderId, load])
 
   if (!order) return <p className="text-center opacity-60 py-10">Caricamento…</p>
 
   const items = order.order_items || []
 
+  // VISTA "AGGIUNGI ITEMS"
   if (adding) {
     const itemsArr = Object.entries(qty)
-      .map(([id, quantita]) => {
+      .map(([id, val]) => {
         const m = menu.find(mm => mm.id === id)
-        return m ? { menuItem: m, quantita } : null
+        return m ? { menuItem: m, quantita: val.quantita, mandata: val.mandata } : null
       })
       .filter(Boolean)
     const totaleAgg = itemsArr.reduce(
@@ -693,7 +763,9 @@ function DettaglioOrdine({ orderId, menu, onAddItems, initialAdding = false }) {
 
     return (
       <div className="pb-32 mobile-landscape:pb-24">
-        <p className="mb-3 font-semibold">Aggiungi al tavolo {order.numero_tavolo}</p>
+        <p className="mb-3 font-semibold">
+          Aggiungi al tavolo {order.numero_tavolo}{order.nome_cliente ? ' · ' + order.nome_cliente : ''}
+        </p>
         <MenuSelector items={menu} quantities={qty} onChange={setQty} />
         <div className="fixed bottom-0 left-0 right-0 bg-pannello border-t border-bordo
                         p-3 mobile-landscape:p-2 z-20">
@@ -735,15 +807,86 @@ function DettaglioOrdine({ orderId, menu, onAddItems, initialAdding = false }) {
     )
   }
 
+  const stornato = order.stato === 'stornato'
+  const inCassa  = order.stato === 'attesa_cassa'
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
+  const cucinaGroups = groupByMandata(cucinaItems)
+  const barGroups    = groupByMandata(barItems)
+  const cucinaNumeri = getNumeriMandata(cucinaItems)
+  const barNumeri    = getNumeriMandata(barItems)
+
+  // Bar M2 sblocco disponibile?
+  const puoSbloccareBarM2 = !stornato
+    && barGroups[2]
+    && barGroups[2].every(i => i.mandata_stato === 'in_attesa')
+
+  const azioneStorna = async () => {
+    const note = window.prompt('Motivo dello storno (opzionale):')
+    if (note === null) return // cancel
+    if (!window.confirm('Confermi lo storno? L\'ordine viene messo in pausa.')) return
+    try {
+      setBusy(true)
+      await onStorna(note || null, null)
+    } catch (e) {
+      alert('Errore: ' + (e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const azionePassaAContanti = async () => {
+    if (!window.confirm('Passare da bancomat a contanti?\nL\'ordine viene stornato e finisce in cassa.')) return
+    try {
+      setBusy(true)
+      await onStorna('Cambio metodo a contanti', 'contanti')
+    } catch (e) {
+      alert('Errore: ' + (e.message || e))
+    } finally {
+      setBusy(false)
+    }
+  }
 
   return (
     <div className="space-y-4 pb-6">
-      <div className="flex items-center justify-between">
-        <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="lg" />
-        <span className="text-2xl font-bold">€ {Number(order.totale).toFixed(2)}</span>
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="lg" />
+          {order.nome_cliente && (
+            <span className="text-xl font-bold">· {order.nome_cliente}</span>
+          )}
+        </div>
+        <span className="text-2xl font-bold text-green-400">
+          € {Number(order.totale).toFixed(2)}
+        </span>
       </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        {order.tipo_pagamento === 'bancomat' && (
+          <span className="badge bg-blue-700 text-white">💳 Bancomat</span>
+        )}
+        {order.tipo_pagamento === 'contanti' && (
+          <span className="badge bg-emerald-700 text-white">💵 Contanti</span>
+        )}
+        {inCassa && (
+          <span className="badge bg-amber-700 text-white">⏳ In attesa cassa</span>
+        )}
+        {stornato && (
+          <span className="badge bg-red-700 text-white animate-pulse">⚠️ Stornato</span>
+        )}
+      </div>
+
+      {stornato && (
+        <div className="bg-red-900/40 border border-red-700 rounded-xl p-3">
+          <p className="font-bold text-red-300 mb-1">ORDINE IN PAUSA</p>
+          {order.storno_note && (
+            <p className="text-sm break-words">Motivo: {order.storno_note}</p>
+          )}
+          <p className="text-xs opacity-80 mt-1">
+            La cassa lo ri-confermerà dopo l'incasso.
+          </p>
+        </div>
+      )}
 
       {order.note && (
         <p className="text-sm bg-yellow-900/40 border border-yellow-700 rounded-xl p-2">
@@ -751,44 +894,146 @@ function DettaglioOrdine({ orderId, menu, onAddItems, initialAdding = false }) {
         </p>
       )}
 
-      <Sezione titolo="Cucina" items={cucinaItems} colore="text-cucina" />
-      <Sezione titolo="Bar"    items={barItems}    colore="text-bar" />
+      {/* Cucina */}
+      <SezioneMandate
+        titolo="🍳 Cucina"
+        colore="text-cucina"
+        numeri={cucinaNumeri}
+        groups={cucinaGroups}
+        categoria="cucina"
+        disabled={stornato || inCassa}
+        onConsegnata={(n) => onMandataConsegnata(n, 'cucina')}
+      />
 
-      <button
-        onClick={() => setAdding(true)}
-        className="btn-neutral w-full"
-      >
-        + Aggiungi item
-      </button>
+      {/* Bar */}
+      <SezioneMandate
+        titolo="🍺 Bar"
+        colore="text-bar"
+        numeri={barNumeri}
+        groups={barGroups}
+        categoria="bar"
+        disabled={stornato || inCassa}
+        onConsegnata={(n) => onMandataConsegnata(n, 'bar')}
+      />
+
+      {puoSbloccareBarM2 && (
+        <button
+          disabled={busy}
+          onClick={async () => {
+            if (!window.confirm('Inviare caffè/amari al bar adesso?')) return
+            try {
+              setBusy(true)
+              await onSbloccaBarM2()
+            } catch (e) {
+              alert('Errore: ' + (e.message || e))
+            } finally {
+              setBusy(false)
+            }
+          }}
+          className="btn-primary w-full"
+        >
+          🔓 Invia caffè/amari al bar
+        </button>
+      )}
+
+      {!stornato && !inCassa && (
+        <button onClick={() => setAdding(true)} className="btn-neutral w-full" disabled={busy}>
+          + Aggiungi item
+        </button>
+      )}
+
+      {!stornato && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+          <button
+            disabled={busy}
+            onClick={azioneStorna}
+            className="px-3 py-3 rounded-xl font-semibold bg-red-700 text-white active:scale-95"
+          >
+            ⚠️ Storna ordine
+          </button>
+          {order.tipo_pagamento === 'bancomat' && (
+            <button
+              disabled={busy}
+              onClick={azionePassaAContanti}
+              className="px-3 py-3 rounded-xl font-semibold bg-amber-700 text-white active:scale-95"
+            >
+              💵 Passa a contanti
+            </button>
+          )}
+        </div>
+      )}
     </div>
   )
 }
 
-function Sezione({ titolo, items, colore }) {
-  if (items.length === 0) return null
+function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, onConsegnata }) {
+  if (numeri.length === 0) return null
   return (
     <div>
       <h3 className={`font-bold mb-2 ${colore}`}>{titolo}</h3>
-      <ul className="space-y-1">
-        {items.map(it => (
-          <li key={it.id} className="flex items-start justify-between gap-3 card py-2">
-            <div className="flex flex-wrap items-center gap-2 flex-1 min-w-0">
-              <span className={`badge ${it.pronto ? 'bg-green-700' : 'bg-yellow-600'}`}>
-                {it.pronto ? 'Pronto' : 'In attesa'}
-              </span>
-              <span className="font-semibold break-words whitespace-normal">
-                {it.nome_item}
-              </span>
-            </div>
-            <div className="flex items-center gap-3 text-sm shrink-0">
-              <span className="opacity-80">× {it.quantita}</span>
-              <span className="font-bold">
-                € {(Number(it.prezzo_unitario) * it.quantita).toFixed(2)}
-              </span>
-            </div>
-          </li>
+      <ul className="space-y-3">
+        {numeri.map(n => (
+          <MandataRow
+            key={n}
+            numero={n}
+            items={groups[n]}
+            categoria={categoria}
+            disabled={disabled}
+            onConsegnata={() => onConsegnata(n)}
+          />
         ))}
       </ul>
     </div>
+  )
+}
+
+function MandataRow({ numero, items, categoria, disabled, onConsegnata }) {
+  const stato = getStatoMandataDisplay(items)
+  const [busy, setBusy] = useState(false)
+
+  const barM2Bloccata = categoria === 'bar' && numero === 2
+    && items.every(i => i.mandata_stato === 'in_attesa')
+
+  let bordo = 'border-l-yellow-500 bg-yellow-900/15'
+  if (stato === 'consegnata') bordo = 'border-l-blue-500 bg-blue-900/15 opacity-70'
+  else if (stato === 'pronta') bordo = 'border-l-green-500 bg-green-900/20'
+  else if (stato === 'in_pausa') bordo = 'border-l-red-500 bg-red-900/20'
+  else if (barM2Bloccata) bordo = 'border-l-yellow-500 bg-yellow-900/10 opacity-70'
+
+  const headerLabel = (() => {
+    if (stato === 'consegnata') return `M${numero} · ✅ consegnata`
+    if (stato === 'pronta')     return `M${numero} · 🟢 pronta`
+    if (stato === 'in_pausa')   return `M${numero} · ⏸️ in pausa`
+    if (stato === 'in_preparazione') return `M${numero} · 🔥 in preparazione`
+    if (barM2Bloccata)          return `M${numero} · 🔒 in attesa`
+    return `M${numero} · ⏳ in attesa`
+  })()
+
+  return (
+    <li className={`border-l-4 ${bordo} rounded-r-lg p-2`}>
+      <div className="text-xs font-bold uppercase tracking-widest mb-2 opacity-90">
+        {headerLabel}
+      </div>
+      <ul className="text-sm space-y-1">
+        {items.map(it => (
+          <li key={it.id} className="flex items-center justify-between gap-2">
+            <span className="break-words whitespace-normal">{it.nome_item}</span>
+            <span className="opacity-80 shrink-0">× {it.quantita}</span>
+          </li>
+        ))}
+      </ul>
+      {stato === 'pronta' && !disabled && (
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try { await onConsegnata() } finally { setBusy(false) }
+          }}
+          className="btn-success w-full mt-2 text-sm py-1"
+        >
+          ✓ Consegnata al tavolo
+        </button>
+      )}
+    </li>
   )
 }

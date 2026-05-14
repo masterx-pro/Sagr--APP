@@ -4,6 +4,7 @@ import CamerierePage from './pages/CamerierePage.jsx'
 import BarPage from './pages/BarPage.jsx'
 import CucinaPage from './pages/CucinaPage.jsx'
 import AdminPage from './pages/AdminPage.jsx'
+import CassaPage from './pages/CassaPage.jsx'
 
 /**
  * App: legge l'utente da localStorage e instrada
@@ -50,6 +51,8 @@ export default function App() {
       return <BarPage user={user} onLogout={handleLogout} />
     case 'cucina':
       return <CucinaPage user={user} onLogout={handleLogout} />
+    case 'cassa':
+      return <CassaPage user={user} onLogout={handleLogout} />
     case 'admin':
       return <AdminPage user={user} onLogout={handleLogout} />
     default:

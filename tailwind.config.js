@@ -12,6 +12,7 @@ export default {
         bar: '#E65100',
         cucina: '#B71C1C',
         admin: '#4A148C',
+        cassa: '#1B5E20',
         sfondo: '#1a1a2e',
         pannello: '#16213e',
         bordo: '#0f3460'

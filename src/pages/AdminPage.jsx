@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
@@ -6,15 +6,23 @@ import OrderCard from '../components/OrderCard.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
 import { getServizioAttuale } from '../utils/servizio.js'
 
+const STATI_ORDINE = ['bozza', 'attesa_cassa', 'confermato', 'stornato', 'completato']
+
+const STATO_LABEL_BREVE = {
+  bozza:        'Bozza',
+  attesa_cassa: 'In cassa',
+  confermato:   'Confermati',
+  stornato:     'Stornati',
+  completato:   'Completati',
+}
+
 /**
- * AdminPage: 4 tab → Ordini, Menu, Riepilogo, Staff.
+ * AdminPage v2: tab Ordini, Menu, Riepilogo, Staff, Impostazioni.
  */
 export default function AdminPage({ user, onLogout }) {
   useExitConfirmGuard(onLogout)
   const [tab, setTab] = useState('ordini')
 
-  // Auto-switch badge pranzo/cena a 16:00 (admin vede tutti i servizi,
-  // qui basta forzare il re-render dell'header).
   const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
   useEffect(() => {
     const interval = setInterval(() => {
@@ -43,20 +51,22 @@ export default function AdminPage({ user, onLogout }) {
         </div>
       </header>
 
-      <nav className="grid grid-cols-4 gap-1 p-2 bg-pannello border-b border-bordo
+      <nav className="grid grid-cols-5 gap-1 p-2 bg-pannello border-b border-bordo
                       sticky top-[3.25rem] z-20 mobile-landscape:top-[2.5rem]
                       mobile-landscape:p-1">
-        <TabBtn active={tab === 'ordini'}    onClick={() => setTab('ordini')}>Ordini</TabBtn>
-        <TabBtn active={tab === 'menu'}      onClick={() => setTab('menu')}>Menu</TabBtn>
-        <TabBtn active={tab === 'riepilogo'} onClick={() => setTab('riepilogo')}>Riepilogo</TabBtn>
-        <TabBtn active={tab === 'staff'}     onClick={() => setTab('staff')}>Staff</TabBtn>
+        <TabBtn active={tab === 'ordini'}       onClick={() => setTab('ordini')}>Ordini</TabBtn>
+        <TabBtn active={tab === 'menu'}         onClick={() => setTab('menu')}>Menu</TabBtn>
+        <TabBtn active={tab === 'riepilogo'}    onClick={() => setTab('riepilogo')}>Riepilogo</TabBtn>
+        <TabBtn active={tab === 'staff'}        onClick={() => setTab('staff')}>Staff</TabBtn>
+        <TabBtn active={tab === 'impostazioni'} onClick={() => setTab('impostazioni')}>Timer</TabBtn>
       </nav>
 
       <main className="flex-1 p-4 mobile-landscape:p-3">
-        {tab === 'ordini'    && <TabOrdini />}
-        {tab === 'menu'      && <TabMenu />}
-        {tab === 'riepilogo' && <TabRiepilogo />}
-        {tab === 'staff'     && <TabStaff />}
+        {tab === 'ordini'       && <TabOrdini />}
+        {tab === 'menu'         && <TabMenu />}
+        {tab === 'riepilogo'    && <TabRiepilogo />}
+        {tab === 'staff'        && <TabStaff />}
+        {tab === 'impostazioni' && <TabImpostazioni />}
       </main>
     </div>
   )
@@ -81,6 +91,7 @@ function TabBtn({ active, onClick, children }) {
 
 function TabOrdini() {
   const { orders, fetchAllOrders, deleteOrder } = useOrders()
+  const [filtroStato, setFiltroStato] = useState('tutti')
   const [filtroServizio, setFiltroServizio] = useState('tutti')
 
   useEffect(() => {
@@ -105,9 +116,14 @@ function TabOrdini() {
     }
   }
 
-  const filtrati = filtroServizio === 'tutti'
-    ? orders
-    : orders.filter(o => o.servizio === filtroServizio)
+  let filtrati = orders
+  if (filtroStato !== 'tutti') filtrati = filtrati.filter(o => o.stato === filtroStato)
+  if (filtroServizio !== 'tutti') filtrati = filtrati.filter(o => o.servizio === filtroServizio)
+
+  const conteggi = STATI_ORDINE.reduce((acc, s) => {
+    acc[s] = orders.filter(o => o.stato === s).length
+    return acc
+  }, {})
 
   return (
     <div className="space-y-3">
@@ -122,6 +138,18 @@ function TabOrdini() {
           🌙 Cena ({orders.filter(o => o.servizio === 'cena').length})
         </FiltroBtn>
       </div>
+
+      <div className="grid grid-cols-3 sm:grid-cols-6 gap-2">
+        <FiltroBtn active={filtroStato === 'tutti'} onClick={() => setFiltroStato('tutti')}>
+          Tutti
+        </FiltroBtn>
+        {STATI_ORDINE.map(s => (
+          <FiltroBtn key={s} active={filtroStato === s} onClick={() => setFiltroStato(s)}>
+            {STATO_LABEL_BREVE[s]} ({conteggi[s] || 0})
+          </FiltroBtn>
+        ))}
+      </div>
+
       {filtrati.length === 0 ? (
         <p className="text-center opacity-60 py-8">Nessun ordine</p>
       ) : (
@@ -142,7 +170,7 @@ function FiltroBtn({ active, onClick, children }) {
   return (
     <button
       onClick={onClick}
-      className={`min-h-btn rounded-xl font-semibold text-sm px-2 ${
+      className={`min-h-btn rounded-xl font-semibold text-xs sm:text-sm px-2 ${
         active ? 'bg-admin text-white' : 'bg-pannello border border-bordo'
       }`}
     >
@@ -386,11 +414,13 @@ function FormModificaItem({ item, onSave, onCancel }) {
   const [nome, setNome] = useState(item.nome)
   const [prezzo, setPrezzo] = useState(String(item.prezzo))
   const [categoria, setCategoria] = useState(item.categoria)
+  const [ordine, setOrdine] = useState(String(item.ordine ?? 0))
   const [saving, setSaving] = useState(false)
 
   const submit = async (e) => {
     e.preventDefault()
     const p = parseFloat(String(prezzo).replace(',', '.'))
+    const o = parseInt(String(ordine), 10)
     if (!nome.trim() || isNaN(p) || p < 0) {
       alert('Compila nome e prezzo validi')
       return
@@ -400,7 +430,8 @@ function FormModificaItem({ item, onSave, onCancel }) {
       await onSave(item.id, {
         nome: nome.trim(),
         prezzo: p,
-        categoria
+        categoria,
+        ordine: isNaN(o) ? 0 : o,
       })
     } finally {
       setSaving(false)
@@ -437,6 +468,15 @@ function FormModificaItem({ item, onSave, onCancel }) {
           <option value="bar">Bar</option>
         </select>
       </label>
+      <label className="block">
+        <span className="text-xs opacity-80">Ordine (1-9 antipasti, 10-19 primi, …, bar 40+ = caffè/amari)</span>
+        <input
+          className="input-base mt-1"
+          inputMode="numeric"
+          value={ordine}
+          onChange={e => setOrdine(e.target.value)}
+        />
+      </label>
       <div className="grid grid-cols-2 gap-2 pt-1">
         <button
           type="button"
@@ -466,18 +506,24 @@ function TabRiepilogo() {
   const load = async () => {
     const { data: tutti } = await supabase
       .from('orders')
-      .select('id, numero_tavolo, stato, totale, servizio, order_items(nome_item, quantita)')
+      .select('id, numero_tavolo, stato, totale, servizio, tipo_pagamento, order_items(nome_item, quantita)')
 
     if (!tutti) return
 
-    const pagati = tutti.filter(o => o.stato === 'pagato')
-    const aperti = tutti.filter(o => o.stato !== 'pagato')
-    const pagatiPranzo = pagati.filter(o => o.servizio === 'pranzo')
-    const pagatiCena   = pagati.filter(o => o.servizio === 'cena')
-    const incasso       = pagati.reduce((s, o) => s + Number(o.totale), 0)
-    const incassoPranzo = pagatiPranzo.reduce((s, o) => s + Number(o.totale), 0)
-    const incassoCena   = pagatiCena.reduce((s, o) => s + Number(o.totale), 0)
-    const tavoliServiti = new Set(pagati.map(o => o.numero_tavolo)).size
+    // Considero come "incassati" gli ordini confermati + completati
+    const incassati = tutti.filter(o => o.stato === 'confermato' || o.stato === 'completato')
+    const aperti = tutti.filter(o => o.stato === 'bozza' || o.stato === 'attesa_cassa' || o.stato === 'stornato')
+
+    const sum = (arr) => arr.reduce((s, o) => s + Number(o.totale || 0), 0)
+
+    const incassoBancomat = sum(incassati.filter(o => o.tipo_pagamento === 'bancomat'))
+    const incassoContanti = sum(incassati.filter(o => o.tipo_pagamento === 'contanti'))
+    const incassoTotale   = sum(incassati)
+
+    const incassoPranzo = sum(incassati.filter(o => o.servizio === 'pranzo'))
+    const incassoCena   = sum(incassati.filter(o => o.servizio === 'cena'))
+
+    const tavoliServiti = new Set(incassati.map(o => o.numero_tavolo)).size
 
     const conteggio = new Map()
     for (const o of tutti) {
@@ -490,12 +536,12 @@ function TabRiepilogo() {
       .slice(0, 5)
 
     setStats({
-      incasso,
-      incassoPranzo,
-      incassoCena,
+      incassoTotale,
+      incassoBancomat, incassoContanti,
+      incassoPranzo, incassoCena,
       tavoliServiti,
       ordiniAperti: aperti.length,
-      top5
+      top5,
     })
   }
 
@@ -516,11 +562,13 @@ function TabRiepilogo() {
   return (
     <div className="space-y-4">
       <div className="grid grid-cols-2 gap-3">
-        <StatCard label="🌞 Incasso Pranzo" value={`€ ${stats.incassoPranzo.toFixed(2)}`} />
-        <StatCard label="🌙 Incasso Cena"   value={`€ ${stats.incassoCena.toFixed(2)}`} />
-        <StatCard label="Incasso totale"    value={`€ ${stats.incasso.toFixed(2)}`} />
-        <StatCard label="Tavoli serviti"    value={stats.tavoliServiti} />
-        <StatCard label="Ordini aperti"     value={stats.ordiniAperti} />
+        <StatCard label="💳 Bancomat"      value={`€ ${stats.incassoBancomat.toFixed(2)}`} />
+        <StatCard label="💵 Contanti"      value={`€ ${stats.incassoContanti.toFixed(2)}`} />
+        <StatCard label="🌞 Pranzo"        value={`€ ${stats.incassoPranzo.toFixed(2)}`} />
+        <StatCard label="🌙 Cena"          value={`€ ${stats.incassoCena.toFixed(2)}`} />
+        <StatCard label="Totale incasso"   value={`€ ${stats.incassoTotale.toFixed(2)}`} />
+        <StatCard label="Tavoli serviti"   value={stats.tavoliServiti} />
+        <StatCard label="Ordini aperti"    value={stats.ordiniAperti} />
       </div>
 
       <div>
@@ -531,9 +579,7 @@ function TabRiepilogo() {
           <ol className="space-y-2">
             {stats.top5.map(([nome, q], i) => (
               <li key={nome} className="card flex items-center justify-between">
-                <span className="font-semibold">
-                  {i + 1}. {nome}
-                </span>
+                <span className="font-semibold">{i + 1}. {nome}</span>
                 <span className="font-bold text-xl">× {q}</span>
               </li>
             ))}
@@ -555,7 +601,7 @@ function StatCard({ label, value }) {
 
 // -------------------- TAB STAFF --------------------
 
-const RUOLI = ['cameriere', 'bar', 'cucina', 'admin']
+const RUOLI = ['cameriere', 'bar', 'cucina', 'cassa', 'admin']
 
 const PIN_LEN = (ruolo) => (ruolo === 'admin' ? 6 : 4)
 
@@ -563,13 +609,14 @@ const RUOLO_BG = {
   cameriere: 'bg-cameriere',
   bar:       'bg-bar',
   cucina:    'bg-cucina',
+  cassa:     'bg-cassa',
   admin:     'bg-admin',
 }
 
 function TabStaff() {
   const [users, setUsers] = useState([])
   const [loading, setLoading] = useState(false)
-  const [reveal, setReveal] = useState({}) // { [id]: boolean }
+  const [reveal, setReveal] = useState({})
 
   const load = async () => {
     setLoading(true)
@@ -674,14 +721,8 @@ function FormAggiungiUtente({ users, onAdded }) {
     setError(null)
 
     const nomeTrim = nome.trim()
-    if (!nomeTrim) {
-      setError('Nome obbligatorio')
-      return
-    }
-    if (!/^\d+$/.test(pin)) {
-      setError('Il PIN deve contenere solo cifre')
-      return
-    }
+    if (!nomeTrim) { setError('Nome obbligatorio'); return }
+    if (!/^\d+$/.test(pin)) { setError('Il PIN deve contenere solo cifre'); return }
     if (pin.length !== lenAttesa) {
       setError(`Il PIN per "${ruolo}" deve essere di ${lenAttesa} cifre`)
       return
@@ -698,17 +739,11 @@ function FormAggiungiUtente({ users, onAdded }) {
     setSaving(false)
 
     if (insErr) {
-      // unique violation lato DB (fallback se due insert in concorrenza)
-      if (insErr.code === '23505') {
-        setError('PIN già in uso')
-      } else {
-        setError(insErr.message)
-      }
+      if (insErr.code === '23505') setError('PIN già in uso')
+      else setError(insErr.message)
       return
     }
-    setNome('')
-    setPin('')
-    setRuolo('cameriere')
+    setNome(''); setPin(''); setRuolo('cameriere')
     onAdded()
   }
 
@@ -753,5 +788,108 @@ function FormAggiungiUtente({ users, onAdded }) {
         {saving ? 'Salvataggio…' : 'Aggiungi'}
       </button>
     </form>
+  )
+}
+
+// -------------------- TAB IMPOSTAZIONI (TIMER) --------------------
+
+const CHIAVI_IMPOSTAZIONI = [
+  { chiave: 'tempo_consegna_min',             label: 'Tempo consegna al tavolo (min)' },
+  { chiave: 'tempo_preparazione_cucina_min',  label: 'Tempo preparazione cucina (min)' },
+  { chiave: 'tempo_consumo_antipasto_min',    label: 'Consumo antipasti (min)' },
+  { chiave: 'tempo_consumo_primo_min',        label: 'Consumo primi (min)' },
+  { chiave: 'tempo_consumo_secondo_min',      label: 'Consumo secondi (min)' },
+  { chiave: 'tempo_consumo_dolce_min',        label: 'Consumo dolci (min)' },
+]
+
+function TabImpostazioni() {
+  const { fetchImpostazioni, saveImpostazione } = useOrders()
+  const [valori, setValori] = useState({})
+  const [originali, setOriginali] = useState({})
+  const [loading, setLoading] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const load = async () => {
+    setLoading(true)
+    try {
+      const map = await fetchImpostazioni()
+      setValori(map)
+      setOriginali(map)
+    } catch (e) {
+      alert('Errore caricamento impostazioni: ' + (e.message || e))
+    } finally {
+      setLoading(false)
+    }
+  }
+  useEffect(() => { load() }, [])
+
+  const cambiate = CHIAVI_IMPOSTAZIONI.filter(
+    ({ chiave }) => String(valori[chiave] ?? '') !== String(originali[chiave] ?? '')
+  )
+
+  const salva = async () => {
+    setSaving(true)
+    try {
+      for (const { chiave } of cambiate) {
+        const v = String(valori[chiave] ?? '').trim()
+        const n = parseInt(v, 10)
+        if (!Number.isFinite(n) || n < 0) {
+          alert(`Valore non valido per ${chiave}`)
+          setSaving(false)
+          return
+        }
+        await saveImpostazione(chiave, n)
+      }
+      await load()
+    } catch (e) {
+      alert('Errore salvataggio: ' + (e.message || e))
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  return (
+    <div className="space-y-3 pb-6">
+      <div className="card bg-blue-900/20 border border-blue-700">
+        <p className="font-bold mb-1">Timer mandate</p>
+        <p className="text-sm opacity-80">
+          Quando la cucina marca pronta una mandata, parte un timer prima che la successiva
+          diventi urgente (bordo rosso). Formula:
+        </p>
+        <p className="text-sm font-mono mt-1 opacity-90">
+          timer = consegna + consumo_portata + preparazione_cucina
+        </p>
+      </div>
+
+      {loading ? (
+        <p className="text-center opacity-60 py-8">Caricamento…</p>
+      ) : (
+        <>
+          {CHIAVI_IMPOSTAZIONI.map(({ chiave, label }) => (
+            <label key={chiave} className="block card">
+              <span className="text-sm opacity-80">{label}</span>
+              <input
+                type="number" inputMode="numeric" min="0"
+                value={valori[chiave] ?? ''}
+                onChange={e => setValori(v => ({ ...v, [chiave]: e.target.value }))}
+                className="input-base mt-1"
+              />
+            </label>
+          ))}
+
+          <button
+            onClick={salva}
+            disabled={saving || cambiate.length === 0}
+            className="btn-success w-full text-lg"
+          >
+            {saving
+              ? 'Salvataggio…'
+              : cambiate.length === 0
+                ? 'Nessuna modifica'
+                : `Salva ${cambiate.length} modific${cambiate.length === 1 ? 'a' : 'he'}`}
+          </button>
+        </>
+      )}
+    </div>
   )
 }

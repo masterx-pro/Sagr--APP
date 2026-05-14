@@ -8,29 +8,40 @@ function formatDataOra(iso) {
 }
 
 const STATO_COLORI = {
-  aperto:         'bg-gray-600',
-  cucina_pronta:  'bg-yellow-600',
-  bar_pronto:     'bg-yellow-600',
-  completo:       'bg-green-600',
-  pagato:         'bg-blue-700'
+  bozza:        'bg-gray-600',
+  attesa_cassa: 'bg-amber-600',
+  confermato:   'bg-green-700',
+  stornato:     'bg-red-700',
+  completato:   'bg-blue-700',
 }
 
 const STATO_LABEL = {
-  aperto:         'Aperto',
-  cucina_pronta:  'Cucina pronta',
-  bar_pronto:     'Bar pronto',
-  completo:       'Pronto',
-  pagato:         'Pagato'
+  bozza:        'Bozza',
+  attesa_cassa: '💵 In cassa',
+  confermato:   'Confermato',
+  stornato:     '⚠️ Stornato',
+  completato:   'Completato',
+}
+
+const TIPO_PAGAMENTO_ICON = {
+  bancomat: '💳',
+  contanti: '💵',
 }
 
 /**
- * OrderCard: card di riepilogo di un ordine (usata dal cameriere e dall'admin).
+ * OrderCard v2: card di riepilogo usata dall'admin.
+ * Mostra nome cliente, tipo pagamento, stato nuovo modello e conteggio
+ * consegne (basato su mandata_stato === 'consegnata').
  */
 export default function OrderCard({ order, items = [], onClick, onDelete }) {
-  const cucinaPronti = items.filter(i => i.categoria === 'cucina' && i.pronto).length
-  const cucinaTot    = items.filter(i => i.categoria === 'cucina').length
-  const barPronti    = items.filter(i => i.categoria === 'bar' && i.pronto).length
-  const barTot       = items.filter(i => i.categoria === 'bar').length
+  const cucinaItems = items.filter(i => i.categoria === 'cucina')
+  const barItems    = items.filter(i => i.categoria === 'bar')
+  const cucinaConsegnati = cucinaItems.filter(i => i.mandata_stato === 'consegnata').length
+  const barConsegnati    = barItems.filter(i => i.mandata_stato === 'consegnata').length
+
+  const tipoIcon = TIPO_PAGAMENTO_ICON[order.tipo_pagamento]
+  const statoLabel = STATO_LABEL[order.stato] || order.stato
+  const statoColor = STATO_COLORI[order.stato] || 'bg-gray-600'
 
   return (
     <div
@@ -39,7 +50,14 @@ export default function OrderCard({ order, items = [], onClick, onDelete }) {
     >
       <div className="flex items-start justify-between mb-2 gap-2">
         <div className="flex flex-col gap-1 min-w-0">
-          <TableBadge numero={order.numero_tavolo} persone={order.n_persone} />
+          <div className="flex items-center gap-2 flex-wrap">
+            <TableBadge numero={order.numero_tavolo} persone={order.n_persone} />
+            {order.nome_cliente && (
+              <span className="text-sm font-semibold opacity-90 truncate max-w-[10rem]">
+                · {order.nome_cliente}
+              </span>
+            )}
+          </div>
           {order.created_at && (
             <span className="text-xs text-gray-400">
               {formatDataOra(order.created_at)}
@@ -51,22 +69,35 @@ export default function OrderCard({ order, items = [], onClick, onDelete }) {
             </span>
           )}
         </div>
-        <span className={`badge text-white ${STATO_COLORI[order.stato] || 'bg-gray-600'}`}>
-          {STATO_LABEL[order.stato] || order.stato}
-        </span>
+        <div className="flex flex-col items-end gap-1 shrink-0">
+          <span className={`badge text-white ${statoColor}`}>
+            {statoLabel}
+          </span>
+          {tipoIcon && (
+            <span className="text-xs opacity-80">
+              {tipoIcon} {order.tipo_pagamento}
+            </span>
+          )}
+        </div>
       </div>
+
+      {order.stato === 'stornato' && order.storno_note && (
+        <p className="text-xs bg-red-900/40 border border-red-700 rounded-lg p-2 mb-2 break-words">
+          Storno: {order.storno_note}
+        </p>
+      )}
 
       <div className="flex flex-col gap-1 text-sm mb-2">
         <div>
           <span className="opacity-70">🍳 Cucina:</span>{' '}
           <span className="font-semibold">
-            {cucinaPronti}/{cucinaTot}
+            {cucinaConsegnati}/{cucinaItems.length}
           </span>
         </div>
         <div>
           <span className="opacity-70">🍺 Bar:</span>{' '}
           <span className="font-semibold">
-            {barPronti}/{barTot}
+            {barConsegnati}/{barItems.length}
           </span>
         </div>
       </div>
