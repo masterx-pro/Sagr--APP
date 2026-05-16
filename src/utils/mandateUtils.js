@@ -2,7 +2,7 @@
 // Pure functions, nessuna dipendenza da Supabase: testabili in isolamento.
 
 import {
-  getPortataFromOrdine,
+  getSottocategoriaFromOrdine,
   getTempoConsumoPortata,
   getTimerMandata,
   getTimerMandateMinuti,
@@ -84,7 +84,7 @@ export function getPortataDominante(mandataItems, impostazioni) {
   for (const it of items) {
     // Supporta sia il caso flat (it.ordine) sia il join (it.menu_items.ordine)
     const ordine = it.ordine ?? it.menu_items?.ordine ?? 0
-    const portata = getPortataFromOrdine(ordine)
+    const portata = getSottocategoriaFromOrdine(ordine)
     if (!portata) continue
     const t = getTempoConsumoPortata(portata, impostazioni)
     if (t > bestTempo) {

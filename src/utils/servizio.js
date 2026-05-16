@@ -93,12 +93,6 @@ export function getSottocategoriaFromOrdine(ordine) {
   return null
 }
 
-// Alias storico: la "portata" della cucina e' la sottocategoria.
-// Mantenuta per retro-compatibilita' con il timer formula v2.
-export function getPortataFromOrdine(ordine) {
-  return getSottocategoriaFromOrdine(ordine)
-}
-
 // Items bar con ordine >= 40 (caffe' / amari) sono di default mandata 4:
 // vengono "sbloccati" dal cameriere a fine pasto.
 export function isBarMandata4(item) {
