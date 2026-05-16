@@ -63,14 +63,16 @@ const TICK_MS = 30_000
 // -------------------- CAMERIERE PAGE --------------------
 
 export default function CamerierePage({ user, onLogout }) {
-  const [view, setView] = useState('list') // 'list' | 'new' | 'detail' | 'payment'
+  const [view, setView] = useState('list') // 'list' | 'new' | 'detail' | 'payment' | 'riordino'
   const [selectedId, setSelectedId] = useState(null)
   const [menu, setMenu] = useState([])
   const [menuLoading, setMenuLoading] = useState(false)
 
-  // Stato bozza per il flusso "nuovo ordine"
+  // Stato bozza per il flusso "nuovo ordine" / "riordino"
   const [draft, setDraft] = useState(null)
   // { tavolo, persone, nomeCliente, note, qty } dove qty = { itemId: { quantita, mandata } }
+  // Flag per distinguere il flusso riordino (back di payment torna a 'riordino', non a 'new')
+  const [isRiordino, setIsRiordino] = useState(false)
 
   const [soundEnabled, setSoundEnabled] = useState(() => {
     try { return JSON.parse(localStorage.getItem('cameriereSound') ?? 'true') }
@@ -120,7 +122,7 @@ export default function CamerierePage({ user, onLogout }) {
     setMenuLoading(false)
   }, [])
   useEffect(() => { loadMenu() }, [loadMenu])
-  useEffect(() => { if (view === 'new') loadMenu() }, [view, loadMenu])
+  useEffect(() => { if (view === 'new' || view === 'riordino') loadMenu() }, [view, loadMenu])
 
   // Realtime
   useEffect(() => {
@@ -168,10 +170,13 @@ export default function CamerierePage({ user, onLogout }) {
 
   // Protezioni navigazione
   useEffect(() => {
-    if (view !== 'new' && view !== 'payment') return
+    if (view !== 'new' && view !== 'payment' && view !== 'riordino') return
     const onBeforeUnload = (e) => {
+      const msg = view === 'riordino'
+        ? 'Hai un riordino in corso. Sei sicuro di voler uscire?'
+        : 'Hai un ordine in corso. Sei sicuro di voler uscire?'
       e.preventDefault()
-      e.returnValue = 'Hai un ordine in corso. Sei sicuro di voler uscire?'
+      e.returnValue = msg
       return e.returnValue
     }
     window.addEventListener('beforeunload', onBeforeUnload)
@@ -189,11 +194,14 @@ export default function CamerierePage({ user, onLogout }) {
       window.addEventListener('popstate', onPop)
       return () => window.removeEventListener('popstate', onPop)
     }
-    if (view === 'new' || view === 'payment') {
+    if (view === 'new' || view === 'payment' || view === 'riordino') {
       window.history.pushState(null, '', window.location.href)
       const onPop = () => {
-        const ok = window.confirm('Hai un ordine in corso. Vuoi annullare e tornare indietro?')
-        if (ok) { setDraft(null); setView('list') }
+        const msg = view === 'riordino'
+          ? 'Vuoi annullare il riordino?'
+          : 'Hai un ordine in corso. Vuoi annullare e tornare indietro?'
+        const ok = window.confirm(msg)
+        if (ok) { setDraft(null); setIsRiordino(false); setView('list') }
         else window.history.pushState(null, '', window.location.href)
       }
       window.addEventListener('popstate', onPop)
@@ -210,8 +218,11 @@ export default function CamerierePage({ user, onLogout }) {
   const onLeftAction = view !== 'list' && (
     <button
       onClick={() => {
-        if (view === 'payment') { setView('new'); return }
-        setView('list'); setSelectedId(null); setDraft(null)
+        if (view === 'payment') {
+          setView(isRiordino ? 'riordino' : 'new')
+          return
+        }
+        setView('list'); setSelectedId(null); setDraft(null); setIsRiordino(false)
       }}
       className="px-3 py-1 rounded-lg bg-white/20 text-sm font-semibold"
     >
@@ -244,6 +255,18 @@ export default function CamerierePage({ user, onLogout }) {
             orders={orders}
             onNew={() => setView('new')}
             onSelect={(id) => { setSelectedId(id); setView('detail') }}
+            onRiordino={(order) => {
+              const nomeBase = (order.nome_cliente || '').replace(/\s*\(riordino\)\s*$/i, '').trim()
+              setDraft({
+                tavolo: String(order.numero_tavolo),
+                persone: '1',
+                nomeCliente: nomeBase ? `${nomeBase} (riordino)` : '(riordino)',
+                note: null,
+                qty: {},
+              })
+              setIsRiordino(true)
+              setView('riordino')
+            }}
           />
         )}
         {view === 'new' && (
@@ -254,6 +277,18 @@ export default function CamerierePage({ user, onLogout }) {
             refreshing={menuLoading}
             onProceedToPayment={(d) => {
               setDraft(d)
+              setView('payment')
+            }}
+          />
+        )}
+        {view === 'riordino' && draft && (
+          <RiordinoRapido
+            menu={menu}
+            draft={draft}
+            onRefresh={loadMenu}
+            refreshing={menuLoading}
+            onProceedToPayment={(qty) => {
+              setDraft({ ...draft, qty })
               setView('payment')
             }}
           />
@@ -287,10 +322,13 @@ export default function CamerierePage({ user, onLogout }) {
                   cameriereId: user.id,
                 })
                 await refetchOrders()
+                const eraRiordino = isRiordino
                 setDraft(null)
+                setIsRiordino(false)
                 setView('list')
                 if (pagamento === 'contanti') {
-                  alert(`Invia il cliente in cassa con:\nTav. ${draft.tavolo} · ${draft.nomeCliente}`)
+                  const prefix = eraRiordino ? 'Riordino in cassa:\n' : 'Invia il cliente in cassa con:\n'
+                  alert(`${prefix}Tav. ${draft.tavolo} · ${draft.nomeCliente}`)
                 }
               } catch (e) {
                 alert('Errore creazione ordine: ' + (e.message || e))
@@ -365,7 +403,7 @@ function Header({ color, nome, ruolo, onLogout, leftAction, soundEnabled, onTogg
 
 // -------------------- LISTA TAVOLI --------------------
 
-function ListaTavoli({ orders, onNew, onSelect }) {
+function ListaTavoli({ orders, onNew, onSelect, onRiordino }) {
   const pronti  = []
   const attivi  = []
   const inCassa = []
@@ -396,15 +434,15 @@ function ListaTavoli({ orders, onNew, onSelect }) {
         <p className="text-center opacity-60 py-8">Nessun ordine</p>
       )}
 
-      <SezioneCards titolo="🟢 Pronti da portare"  orders={pronti}   onSelect={onSelect} />
-      <SezioneCards titolo="🟡 In preparazione"    orders={attivi}   onSelect={onSelect} />
+      <SezioneCards titolo="🟢 Pronti da portare"  orders={pronti}   onSelect={onSelect} onRiordino={onRiordino} />
+      <SezioneCards titolo="🟡 In preparazione"    orders={attivi}   onSelect={onSelect} onRiordino={onRiordino} />
       <SezioneCards titolo="💵 In attesa cassa"    orders={inCassa}  onSelect={onSelect} variant="warning" />
       <SezioneCards titolo="⚠️ Stornati"           orders={stornati} onSelect={onSelect} variant="danger" />
     </div>
   )
 }
 
-function SezioneCards({ titolo, orders, onSelect, variant }) {
+function SezioneCards({ titolo, orders, onSelect, variant, onRiordino }) {
   if (orders.length === 0) return null
   return (
     <div>
@@ -414,7 +452,7 @@ function SezioneCards({ titolo, orders, onSelect, variant }) {
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
                       mobile-landscape:grid-cols-2 gap-3">
         {orders.map(o => (
-          <CompactOrderCard key={o.id} order={o} onSelect={onSelect} variant={variant} />
+          <CompactOrderCard key={o.id} order={o} onSelect={onSelect} variant={variant} onRiordino={onRiordino} />
         ))}
       </div>
     </div>
@@ -423,7 +461,7 @@ function SezioneCards({ titolo, orders, onSelect, variant }) {
 
 // -------------------- COMPACT ORDER CARD --------------------
 
-function CompactOrderCard({ order, onSelect, variant }) {
+function CompactOrderCard({ order, onSelect, variant, onRiordino }) {
   const items = order.order_items || []
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
@@ -514,6 +552,20 @@ function CompactOrderCard({ order, onSelect, variant }) {
           <span className="text-yellow-400 font-semibold">🔒 Caffè/amari in attesa</span>
         )}
       </div>
+
+      {onRiordino && order.stato === 'confermato' && (
+        <div className="mt-2 flex justify-end">
+          <button
+            type="button"
+            onClick={(e) => { e.stopPropagation(); onRiordino(order) }}
+            className="px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-600
+                       text-white text-xs font-semibold active:scale-95"
+            title="Aggiungi un riordino veloce a questo tavolo"
+          >
+            + Riordino
+          </button>
+        </div>
+      )}
     </div>
   )
 }
@@ -1068,5 +1120,221 @@ function MandataRow({ numero, items, categoria, disabled, onConsegnata }) {
         </button>
       )}
     </li>
+  )
+}
+
+// -------------------- RIORDINO RAPIDO --------------------
+//
+// Schermata dedicata per aggiungere voci a un tavolo gia' seduto/pagato.
+// Mostra TUTTI gli items (cucina+bar) in una lista unica raggruppata per
+// portata, con barra di ricerca. Tutto viene messo automaticamente in M1.
+// Footer fisso con totale + "Avanti → Pagamento".
+
+const PORTATE_RIORDINO_CUCINA = [
+  { label: 'Antipasti', test: o => o >= 1  && o <= 9  },
+  { label: 'Primi',     test: o => o >= 10 && o <= 19 },
+  { label: 'Secondi',   test: o => o >= 20 && o <= 29 },
+  { label: 'Contorni',  test: o => o >= 40 && o <= 49 },
+  { label: 'Dolci',     test: o => o >= 30 && o <= 39 },
+]
+const PORTATE_RIORDINO_BAR = [
+  { label: 'Acqua',                   test: o => o >= 1  && o <= 9  },
+  { label: 'Vino sfuso',              test: o => o >= 10 && o <= 19 },
+  { label: 'Verdicchio',              test: o => o >= 20 && o <= 29 },
+  { label: "Lacrima di Morro d'Alba", test: o => o >= 30 && o <= 39 },
+  { label: 'Caffè',                   test: o => o >= 40 && o <= 49 },
+  { label: 'Amari',                   test: o => o >= 50 && o <= 59 },
+]
+
+function raggruppaPerPortata(items, schema) {
+  const groups = schema.map(p => ({
+    label: p.label,
+    items: items.filter(i => p.test(i.ordine ?? 0))
+                .sort((a, b) => (a.ordine ?? 0) - (b.ordine ?? 0)),
+  }))
+  const altro = items.filter(i => !schema.some(p => p.test(i.ordine ?? 0)))
+  if (altro.length) groups.push({ label: 'Altro', items: altro })
+  return groups.filter(g => g.items.length > 0)
+}
+
+function RiordinoRapido({ menu, draft, onProceedToPayment, onRefresh, refreshing }) {
+  const [qty, setQty] = useState(draft?.qty || {})
+  const [cerca, setCerca] = useState('')
+
+  const itemsAttivi = useMemo(
+    () => (menu || []).filter(i => i.attivo !== false),
+    [menu]
+  )
+
+  const filtrati = useMemo(() => {
+    const q = cerca.trim().toLowerCase()
+    if (!q) return itemsAttivi
+    return itemsAttivi.filter(i => (i.nome || '').toLowerCase().includes(q))
+  }, [itemsAttivi, cerca])
+
+  const cucinaGroups = useMemo(
+    () => raggruppaPerPortata(filtrati.filter(i => i.categoria === 'cucina'), PORTATE_RIORDINO_CUCINA),
+    [filtrati]
+  )
+  const barGroups = useMemo(
+    () => raggruppaPerPortata(filtrati.filter(i => i.categoria === 'bar'), PORTATE_RIORDINO_BAR),
+    [filtrati]
+  )
+
+  const totaleItems = useMemo(
+    () => Object.values(qty).reduce((s, m) => s + (Number(m?.[1]) || 0), 0),
+    [qty]
+  )
+  const totalePrezzo = useMemo(() => {
+    let tot = 0
+    for (const [id, m] of Object.entries(qty)) {
+      const q1 = Number(m?.[1]) || 0
+      if (q1 === 0) continue
+      const item = menu.find(x => String(x.id) === String(id))
+      if (item) tot += Number(item.prezzo) * q1
+    }
+    return tot
+  }, [qty, menu])
+
+  const setItemQty = (item, delta) => {
+    const cur = Number(qty[item.id]?.[1]) || 0
+    const next = Math.max(0, cur + delta)
+    const updated = { ...qty }
+    if (next === 0) delete updated[item.id]
+    else updated[item.id] = { 1: next }
+    setQty(updated)
+  }
+
+  const renderRiga = (item) => {
+    const q = Number(qty[item.id]?.[1]) || 0
+    return (
+      <li key={item.id} className="card flex items-start gap-3">
+        <div className="flex-1 min-w-0">
+          <p className="font-semibold break-words whitespace-normal">{item.nome}</p>
+          <p className="text-sm opacity-80">€ {Number(item.prezzo).toFixed(2)}</p>
+        </div>
+        <div className="flex items-center gap-2 shrink-0">
+          <button
+            type="button"
+            onClick={() => setItemQty(item, -1)}
+            disabled={q === 0}
+            className="w-11 h-11 rounded-xl bg-red-700 font-bold text-xl
+                       active:scale-95 transition-transform disabled:opacity-30"
+          >
+            −
+          </button>
+          <span className="w-8 text-center text-lg font-bold">{q}</span>
+          <button
+            type="button"
+            onClick={() => setItemQty(item, +1)}
+            className="w-11 h-11 rounded-xl bg-green-700 font-bold text-xl
+                       active:scale-95 transition-transform"
+          >
+            +
+          </button>
+        </div>
+      </li>
+    )
+  }
+
+  return (
+    <div className="pb-28">
+      <div className="flex items-center justify-between mb-3">
+        <div className="min-w-0">
+          <h2 className="text-lg font-bold truncate">
+            Riordino — Tav. {draft?.tavolo}
+          </h2>
+          <p className="text-sm opacity-80 truncate">{draft?.nomeCliente}</p>
+        </div>
+        {onRefresh && (
+          <button
+            type="button"
+            onClick={onRefresh}
+            disabled={refreshing}
+            aria-label="Ricarica menu"
+            title="Ricarica menu"
+            className={`w-9 h-9 rounded-lg bg-pannello border border-bordo text-base
+                        flex items-center justify-center active:scale-95
+                        disabled:opacity-50 ${refreshing ? 'animate-spin' : ''}`}
+          >
+            🔄
+          </button>
+        )}
+      </div>
+
+      <input
+        type="search"
+        inputMode="search"
+        value={cerca}
+        onChange={e => setCerca(e.target.value)}
+        placeholder="Cerca per nome (es. acqua, caffè)…"
+        className="input-base mb-4"
+      />
+
+      {filtrati.length === 0 && (
+        <p className="text-center opacity-60 py-6">
+          Nessuna voce corrisponde a "{cerca}"
+        </p>
+      )}
+
+      {cucinaGroups.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-cucina font-bold text-sm uppercase tracking-widest mb-2
+                         border-b border-cucina/40 pb-1">
+            🍳 Cucina
+          </h3>
+          <ul className="space-y-2">
+            {cucinaGroups.flatMap(g => [
+              <li key={`cuc-hdr-${g.label}`}
+                  className="bg-black/30 border-y border-bordo py-1 text-center
+                             text-xs font-bold uppercase tracking-widest opacity-80">
+                — {g.label} —
+              </li>,
+              ...g.items.map(renderRiga),
+            ])}
+          </ul>
+        </div>
+      )}
+
+      {barGroups.length > 0 && (
+        <div className="mb-4">
+          <h3 className="text-bar font-bold text-sm uppercase tracking-widest mb-2
+                         border-b border-bar/40 pb-1">
+            🍺 Bar
+          </h3>
+          <ul className="space-y-2">
+            {barGroups.flatMap(g => [
+              <li key={`bar-hdr-${g.label}`}
+                  className="bg-black/30 border-y border-bordo py-1 text-center
+                             text-xs font-bold uppercase tracking-widest opacity-80">
+                — {g.label} —
+              </li>,
+              ...g.items.map(renderRiga),
+            ])}
+          </ul>
+        </div>
+      )}
+
+      {/* Footer fisso con totale + Avanti */}
+      <div className="fixed bottom-0 left-0 right-0 bg-sfondo border-t border-bordo
+                      px-4 py-3 z-30 shadow-lg">
+        <div className="flex items-center justify-between mb-2">
+          <span className="text-sm opacity-80">
+            {totaleItems} {totaleItems === 1 ? 'pezzo' : 'pezzi'}
+          </span>
+          <span className="text-2xl font-bold text-green-400">
+            € {totalePrezzo.toFixed(2)}
+          </span>
+        </div>
+        <button
+          type="button"
+          disabled={totaleItems === 0}
+          onClick={() => onProceedToPayment(qty)}
+          className="btn-primary w-full text-lg disabled:opacity-40"
+        >
+          Avanti → Pagamento
+        </button>
+      </div>
+    </div>
   )
 }
