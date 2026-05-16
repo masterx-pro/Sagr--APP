@@ -115,10 +115,9 @@ export function useOrders({ autoload = false } = {}) {
   //   items: [{ menuItem, quantita, mandata? }]
   //          mandata default = 1; per voci bar caffe'/amari (ordine>=40)
   //          viene forzata a 2 ignorando il parametro.
-  //   pagamento: 'bancomat' | 'contanti' | undefined
+  //   pagamento: 'bancomat' | 'contanti'
   //          'bancomat'  -> stato 'confermato' (gia' incassato)
   //          'contanti'  -> stato 'attesa_cassa'
-  //          undefined   -> stato 'bozza'
   const createOrder = useCallback(async ({
     tavolo,
     persone,
@@ -152,9 +151,7 @@ export function useOrders({ autoload = false } = {}) {
       tipo_pagamento = 'contanti'
       pagato_at = null
     } else {
-      stato = 'bozza'
-      tipo_pagamento = null
-      pagato_at = null
+      throw new Error('Pagamento obbligatorio: bancomat o contanti')
     }
 
     const insertObj = {
@@ -318,10 +315,6 @@ export function useOrders({ autoload = false } = {}) {
     if (error) throw error
   }, [])
 
-  // Alias retro-compat v2/v3
-  const sbloccaMandata4    = inviaM4
-  const sbloccaBarMandata2 = inviaM4
-
   // -----------------------------------------------------------
   // PAGAMENTI — storno / conferma cassa
   // -----------------------------------------------------------
@@ -417,14 +410,11 @@ export function useOrders({ autoload = false } = {}) {
     markMandataReady,
     markMandataConsegnata,
     inviaM4,
-    sbloccaMandata4,     // alias retro-compat v3
-    sbloccaBarMandata2,  // alias retro-compat v2
     // pagamenti
     stornaOrdine,
     confermaPagamentoCassa,
     // utility
     completaOrdine,
     deleteOrder,
-    setOrders,
   }
 }

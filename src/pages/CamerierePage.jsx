@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
+import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import MenuSelector, { flattenQuantities } from '../components/MenuSelector.jsx'
 import TableBadge from '../components/TableBadge.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
@@ -83,27 +84,32 @@ export default function CamerierePage({ user, onLogout }) {
     orders, fetchOrdiniAttivi,
     createOrder, addItemsToOrder,
     markMandataConsegnata, inviaM4,
-    stornaOrdine, fetchImpostazioni,
+    stornaOrdine,
   } = useOrders()
 
-  const [impostazioni, setImpostazioni] = useState({})
-  useEffect(() => { fetchImpostazioni().then(setImpostazioni).catch(() => {}) }, [fetchImpostazioni])
+  const { impostazioni } = useImpostazioni()
 
-  const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
+  const [servizioCorrente, setServizioCorrente] = useState(() => getServizioAttuale(impostazioni))
   const refetchOrders = useCallback(
     () => fetchOrdiniAttivi(servizioCorrente),
     [fetchOrdiniAttivi, servizioCorrente]
   )
   useEffect(() => { refetchOrders() }, [refetchOrders])
 
+  // Ricalcola servizio quando arrivano le impostazioni
+  useEffect(() => {
+    const nuovo = getServizioAttuale(impostazioni)
+    if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
+  }, [impostazioni])
+
   // Auto-switch pranzo/cena
   useEffect(() => {
     const interval = setInterval(() => {
-      const nuovo = getServizioAttuale()
+      const nuovo = getServizioAttuale(impostazioni)
       if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
     }, 60_000)
     return () => clearInterval(interval)
-  }, [servizioCorrente])
+  }, [servizioCorrente, impostazioni])
 
   const loadMenu = useCallback(async () => {
     setMenuLoading(true)
@@ -118,15 +124,19 @@ export default function CamerierePage({ user, onLogout }) {
 
   // Realtime
   useEffect(() => {
+    // order_items: solo UPDATE (mandata_stato). Gli INSERT arrivano via
+    // l'evento INSERT/UPDATE su orders (refetch include order_items).
+    // orders: '*' filtrato per servizio corrente (anche INSERT per
+    // mostrare ordini di altri camerieri).
     const channel = supabase
-      .channel('cameriere-feed')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' },
+      .channel(`cameriere-feed-${servizioCorrente}`)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'order_items' },
         () => refetchOrders())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' },
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'orders', filter: `servizio=eq.${servizioCorrente}` },
         () => refetchOrders())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [refetchOrders])
+  }, [refetchOrders, servizioCorrente])
 
   // Notifica sonora: quando un ordine ha NUOVE mandate 'pronte'
   const lastReadyRef = useRef(null)
@@ -254,7 +264,7 @@ export default function CamerierePage({ user, onLogout }) {
             menu={menu}
             onBack={() => setView('new')}
             onConfirm={async (pagamento) => {
-              const servizio = getServizioAttuale()
+              const servizio = getServizioAttuale(impostazioni)
               const itemsArr = flattenQuantities(draft.qty).map(r => {
                 const menuItem = menu.find(m => m.id === r.itemId)
                 return menuItem ? {
@@ -531,13 +541,23 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
 
   const totPezzi = itemsArr.reduce((s, it) => s + it.quantita, 0)
 
+  const personeNum = parseInt(persone, 10)
+  const personeValide = !isNaN(personeNum) && personeNum >= 1 && personeNum <= 30
+
   const canSubmit =
     tavolo && Number(tavolo) > 0
     && nomeCliente.trim().length > 0
     && itemsArr.length > 0
+    && personeValide
 
   const submit = () => {
-    if (!canSubmit) return
+    if (!canSubmit) {
+      if (!personeValide) {
+        alert('Numero persone non valido (min 1, max 30)')
+        return
+      }
+      return
+    }
     onProceedToPayment({ tavolo, persone, nomeCliente, note, qty })
   }
 
@@ -573,7 +593,7 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
         <label className="block">
           <span className="text-sm opacity-80">N. Persone</span>
           <input
-            type="number" inputMode="numeric" min="1"
+            type="number" inputMode="numeric" min="1" max="30"
             value={persone} onChange={e => setPersone(e.target.value)}
             className="input-base mt-1"
           />

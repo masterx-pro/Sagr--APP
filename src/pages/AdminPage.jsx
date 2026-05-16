@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
+import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import OrderCard from '../components/OrderCard.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
 import { getServizioAttuale, rangeOrdinePerSottocategoria } from '../utils/servizio.js'
@@ -24,22 +25,22 @@ const STATO_LABEL_BREVE = {
 export default function AdminPage({ user, onLogout }) {
   useExitConfirmGuard(onLogout)
   const [tab, setTab] = useState('ordini')
-  const [impostazioni, setImpostazioni] = useState({})
-  const { fetchImpostazioni } = useOrders()
+  const { impostazioni } = useImpostazioni()
 
+  // Servizio "interno" (pranzo/cena) per filtri ordini.
+  // Risolto via fasce orarie quando disponibili, altrimenti fallback orario.
+  const [servizioCorrente, setServizioCorrente] = useState(() => getServizioAttuale(impostazioni))
   useEffect(() => {
-    fetchImpostazioni().then(setImpostazioni).catch(() => {})
-  }, [fetchImpostazioni])
-
-  // Servizio "interno" (pranzo/cena) per filtri ordini: resta basato su getHours.
-  const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
+    const nuovo = getServizioAttuale(impostazioni)
+    if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
+  }, [impostazioni])
   useEffect(() => {
     const interval = setInterval(() => {
-      const nuovo = getServizioAttuale()
+      const nuovo = getServizioAttuale(impostazioni)
       if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
     }, 60_000)
     return () => clearInterval(interval)
-  }, [servizioCorrente])
+  }, [servizioCorrente, impostazioni])
 
   return (
     <div className="min-h-screen flex flex-col">
@@ -105,11 +106,13 @@ function TabOrdini() {
 
   useEffect(() => {
     fetchAllOrders()
+    // orders: '*' (admin vede insert/update/delete). order_items: solo UPDATE
+    // (gli INSERT triggerano sempre anche un UPDATE su orders.totale).
     const channel = supabase
       .channel('admin-orders')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' },
         () => fetchAllOrders())
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' },
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'order_items' },
         () => fetchAllOrders())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
@@ -625,7 +628,7 @@ function TabRiepilogo() {
     const channel = supabase
       .channel('admin-stats')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, load)
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'order_items' }, load)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'order_items' }, load)
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [])

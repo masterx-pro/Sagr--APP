@@ -1,8 +1,38 @@
 // Utility per la logica servizio (pranzo/cena), portate e mandate.
-// Servizio "pranzo" prima delle 16:00, "cena" dalle 16:00 in poi.
+//
+// Determinazione del servizio:
+//   1. Se sono passate le impostazioni e c'e' una fascia oraria attiva,
+//      mappa colazione/pranzo -> 'pranzo', aperitivo/cena -> 'cena'.
+//   2. Se nessuna fascia e' attiva ma `ultimoServizio` e' salvato in
+//      localStorage, lo usa (continua la sessione fino a fine serata).
+//   3. Fallback hardcoded: cena copre [16:00, 04:00), pranzo [04:00, 16:00).
+//      Estesa fino alle 4 di notte per supportare sagre che chiudono tardi.
 
-export function getServizioAttuale() {
-  return new Date().getHours() < 16 ? 'pranzo' : 'cena'
+function fasciaToServizio(fascia) {
+  if (fascia === 'colazione' || fascia === 'pranzo') return 'pranzo'
+  if (fascia === 'aperitivo' || fascia === 'cena')   return 'cena'
+  return null
+}
+
+function servizioFallbackOrario(hours) {
+  return (hours >= 16 || hours < 4) ? 'cena' : 'pranzo'
+}
+
+export function getServizioAttuale(impostazioni = null) {
+  let servizio = null
+  if (impostazioni && Object.keys(impostazioni).length > 0) {
+    servizio = fasciaToServizio(getFasciaOrariaAttuale(impostazioni))
+  }
+  if (!servizio) {
+    try {
+      const saved = localStorage.getItem('ultimoServizio')
+      if (saved === 'pranzo' || saved === 'cena') servizio = saved
+    } catch { /* ignore */ }
+  }
+  if (!servizio) servizio = servizioFallbackOrario(new Date().getHours())
+
+  try { localStorage.setItem('ultimoServizio', servizio) } catch { /* ignore */ }
+  return servizio
 }
 
 export function getDataServizio() {
@@ -76,10 +106,6 @@ export function isBarMandata4(item) {
   const ordine = item.ordine ?? item.menu_items?.ordine ?? 0
   return ordine >= 40
 }
-
-// Alias retro-compatibile (era isBarMandata2 in v2). Da rimuovere appena
-// tutti i callers passano alla nuova denominazione.
-export const isBarMandata2 = isBarMandata4
 
 // Mandata di default per un menu_item: 1-4.
 //   - cucina: derivata dalla sottocategoria

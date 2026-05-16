@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState, useRef } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
+import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import TableBadge from '../components/TableBadge.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
 import { getServizioAttuale } from '../utils/servizio.js'
@@ -78,11 +79,11 @@ const TICK_MS = 15_000
 
 export default function StationPage({ user, onLogout, categoria, titolo, coloreHeader }) {
   const [orders, setOrders] = useState([])
-  const [impostazioni, setImpostazioni] = useState({})
+  const { impostazioni } = useImpostazioni()
   const [view, setView] = useState('per-tavolo')
-  const { markMandataInPreparazione, markMandataReady, fetchImpostazioni } = useOrders()
+  const { markMandataInPreparazione, markMandataReady } = useOrders()
   const [refreshTick, setRefreshTick] = useState(0)
-  const [servizioCorrente, setServizioCorrente] = useState(getServizioAttuale())
+  const [servizioCorrente, setServizioCorrente] = useState(() => getServizioAttuale())
   // Set di orderId che il barista/cuoco ha "dismissato" via swipe
   const [dismissedIds, setDismissedIds] = useState(() => new Set())
 
@@ -106,29 +107,33 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
   useEffect(() => { load() }, [refreshTick, categoria, servizioCorrente])
 
   useEffect(() => {
-    fetchImpostazioni().then(setImpostazioni).catch(() => {})
-  }, [fetchImpostazioni])
+    const nuovo = getServizioAttuale(impostazioni)
+    if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
+  }, [impostazioni])
 
   useEffect(() => {
     const interval = setInterval(() => {
-      const nuovo = getServizioAttuale()
+      const nuovo = getServizioAttuale(impostazioni)
       if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
     }, 60_000)
     return () => clearInterval(interval)
-  }, [servizioCorrente])
+  }, [servizioCorrente, impostazioni])
 
   useEffect(() => {
+    // order_items: ascoltiamo solo UPDATE (cambio mandata_stato).
+    //   I nuovi item arrivano via INSERT su orders -> refetch.
+    // orders: filtrato per servizio corrente per ridurre il traffico.
     const channel = supabase
-      .channel(`station-${categoria}`)
+      .channel(`station-${categoria}-${servizioCorrente}`)
       .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'order_items' },
+        { event: 'UPDATE', schema: 'public', table: 'order_items' },
         () => setRefreshTick(t => t + 1))
       .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'orders' },
+        { event: '*', schema: 'public', table: 'orders', filter: `servizio=eq.${servizioCorrente}` },
         () => setRefreshTick(t => t + 1))
       .subscribe()
     return () => { supabase.removeChannel(channel) }
-  }, [categoria])
+  }, [categoria, servizioCorrente])
 
   const [, setTick] = useState(0)
   useEffect(() => {

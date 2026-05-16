@@ -5,6 +5,7 @@ import BarPage from './pages/BarPage.jsx'
 import CucinaPage from './pages/CucinaPage.jsx'
 import AdminPage from './pages/AdminPage.jsx'
 import CassaPage from './pages/CassaPage.jsx'
+import { ImpostazioniProvider } from './context/ImpostazioniContext.jsx'
 
 /**
  * App: legge l'utente da localStorage e instrada
@@ -44,23 +45,22 @@ export default function App() {
 
   if (!user) return <LoginPage onLogin={handleLogin} />
 
-  switch (user.ruolo) {
-    case 'cameriere':
-      return <CamerierePage user={user} onLogout={handleLogout} />
-    case 'bar':
-      return <BarPage user={user} onLogout={handleLogout} />
-    case 'cucina':
-      return <CucinaPage user={user} onLogout={handleLogout} />
-    case 'cassa':
-      return <CassaPage user={user} onLogout={handleLogout} />
-    case 'admin':
-      return <AdminPage user={user} onLogout={handleLogout} />
-    default:
-      return (
-        <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6">
-          <p className="text-red-400">Ruolo sconosciuto: {user.ruolo}</p>
-          <button onClick={handleLogout} className="btn-danger">Esci</button>
-        </div>
-      )
-  }
+  const page = (() => {
+    switch (user.ruolo) {
+      case 'cameriere': return <CamerierePage user={user} onLogout={handleLogout} />
+      case 'bar':       return <BarPage user={user} onLogout={handleLogout} />
+      case 'cucina':    return <CucinaPage user={user} onLogout={handleLogout} />
+      case 'cassa':     return <CassaPage user={user} onLogout={handleLogout} />
+      case 'admin':     return <AdminPage user={user} onLogout={handleLogout} />
+      default:
+        return (
+          <div className="min-h-screen flex flex-col items-center justify-center gap-4 p-6">
+            <p className="text-red-400">Ruolo sconosciuto: {user.ruolo}</p>
+            <button onClick={handleLogout} className="btn-danger">Esci</button>
+          </div>
+        )
+    }
+  })()
+
+  return <ImpostazioniProvider>{page}</ImpostazioniProvider>
 }

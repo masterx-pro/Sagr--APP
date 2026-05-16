@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
+import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import TableBadge from '../components/TableBadge.jsx'
 import ServizioBadge from '../components/ServizioBadge.jsx'
 
@@ -14,23 +15,23 @@ import ServizioBadge from '../components/ServizioBadge.jsx'
 export default function CassaPage({ user, onLogout }) {
   useExitConfirmGuard(onLogout)
 
-  const { orders, fetchCassaQueue, confermaPagamentoCassa, fetchImpostazioni } = useOrders()
+  const { orders, fetchCassaQueue, confermaPagamentoCassa } = useOrders()
+  const { impostazioni } = useImpostazioni()
   const [view, setView] = useState('list') // 'list' | 'detail'
   const [selectedId, setSelectedId] = useState(null)
   const [search, setSearch] = useState('')
-  const [impostazioni, setImpostazioni] = useState({})
 
   useEffect(() => { fetchCassaQueue() }, [fetchCassaQueue])
-  useEffect(() => { fetchImpostazioni().then(setImpostazioni).catch(() => {}) }, [fetchImpostazioni])
 
   useEffect(() => {
+    // La cassa vede tutti gli ordini in attesa/storno (cross-servizio):
+    // ascoltiamo '*' su orders (serve INSERT per nuovi ingressi + UPDATE storni).
+    // order_items non serve: il totale cambia via UPDATE su orders;
+    // il dettaglio ha il suo channel mirato.
     const channel = supabase
       .channel('cassa-feed')
       .on('postgres_changes',
         { event: '*', schema: 'public', table: 'orders' },
-        () => fetchCassaQueue())
-      .on('postgres_changes',
-        { event: '*', schema: 'public', table: 'order_items' },
         () => fetchCassaQueue())
       .subscribe()
     return () => { supabase.removeChannel(channel) }
@@ -236,16 +237,15 @@ function DettaglioCassa({ orderId, onIncassato }) {
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
 
-  const incassa = async () => {
+  const incassa = async (tipoPagamento) => {
+    const metodoLabel = tipoPagamento === 'bancomat' ? 'BANCOMAT' : 'CONTANTI'
     const conferma = window.confirm(
-      `Confermi l'incasso di € ${Number(order.totale).toFixed(2)} per Tav. ${order.numero_tavolo}${order.nome_cliente ? ' · ' + order.nome_cliente : ''}?`
+      `Confermi l'incasso (${metodoLabel}) di € ${Number(order.totale).toFixed(2)} per Tav. ${order.numero_tavolo}${order.nome_cliente ? ' · ' + order.nome_cliente : ''}?`
     )
     if (!conferma) return
     setBusy(true)
     try {
-      // Cassa incassa sempre come contanti (anche per ri-conferma storni
-      // che erano partiti bancomat: il caso d'uso e' "ripaga in contanti")
-      await onIncassato('contanti')
+      await onIncassato(tipoPagamento)
     } finally {
       setBusy(false)
     }
@@ -286,13 +286,34 @@ function DettaglioCassa({ orderId, onIncassato }) {
       <Sezione titolo="Cucina" items={cucinaItems} colore="text-cucina" />
       <Sezione titolo="Bar"    items={barItems}    colore="text-bar" />
 
-      <button
-        disabled={busy}
-        onClick={incassa}
-        className="btn-success w-full text-xl py-4"
-      >
-        {busy ? 'In corso…' : '✅ Incassato'}
-      </button>
+      {stornato ? (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <button
+            disabled={busy}
+            onClick={() => incassa('bancomat')}
+            className="card bg-blue-900/40 border-2 border-blue-700 hover:bg-blue-900/60
+                       min-h-[5rem] flex flex-col items-center justify-center text-lg font-bold"
+          >
+            💳 Ri-conferma Bancomat
+          </button>
+          <button
+            disabled={busy}
+            onClick={() => incassa('contanti')}
+            className="card bg-emerald-900/40 border-2 border-emerald-700 hover:bg-emerald-900/60
+                       min-h-[5rem] flex flex-col items-center justify-center text-lg font-bold"
+          >
+            💵 Ri-conferma Contanti
+          </button>
+        </div>
+      ) : (
+        <button
+          disabled={busy}
+          onClick={() => incassa('contanti')}
+          className="btn-success w-full text-xl py-4"
+        >
+          {busy ? 'In corso…' : '✅ Incassato'}
+        </button>
+      )}
     </div>
   )
 }
