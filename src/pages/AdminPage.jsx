@@ -579,7 +579,7 @@ function TabRiepilogo() {
   const load = async () => {
     const { data: tutti } = await supabase
       .from('orders')
-      .select('id, numero_tavolo, stato, totale, servizio, tipo_pagamento, order_items(nome_item, quantita)')
+      .select('id, numero_tavolo, n_persone, stato, totale, servizio, tipo_pagamento, order_items(nome_item, quantita)')
 
     if (!tutti) return
 
@@ -597,6 +597,7 @@ function TabRiepilogo() {
     const incassoCena   = sum(incassati.filter(o => o.servizio === 'cena'))
 
     const tavoliServiti = new Set(incassati.map(o => o.numero_tavolo)).size
+    const personeServite = incassati.reduce((s, o) => s + (Number(o.n_persone) || 0), 0)
 
     const conteggio = new Map()
     for (const o of tutti) {
@@ -613,6 +614,7 @@ function TabRiepilogo() {
       incassoBancomat, incassoContanti,
       incassoPranzo, incassoCena,
       tavoliServiti,
+      personeServite,
       ordiniAperti: aperti.length,
       top5,
     })
@@ -641,6 +643,7 @@ function TabRiepilogo() {
         <StatCard label="🌙 Cena"          value={`€ ${stats.incassoCena.toFixed(2)}`} />
         <StatCard label="Totale incasso"   value={`€ ${stats.incassoTotale.toFixed(2)}`} />
         <StatCard label="Tavoli serviti"   value={stats.tavoliServiti} />
+        <StatCard label="👥 Persone servite" value={stats.personeServite} />
         <StatCard label="Ordini aperti"    value={stats.ordiniAperti} />
       </div>
 
