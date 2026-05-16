@@ -20,8 +20,10 @@ import {
  *
  * Filtraggio items per categoria:
  *   - CUCINA: categoria='cucina' AND mandata IN (1,2,3)   (M4 esclusa)
- *   - BAR:    categoria='bar' (sempre)
- *             OR (mandata=4 AND mandata_stato != 'in_attesa')  ← anche dolci cucina!
+ *   - BAR:    categoria='bar' AND (mandata != 4 OR mandata_stato != 'in_attesa')
+ *             OR (categoria='cucina' AND mandata=4 AND mandata_stato != 'in_attesa')
+ *             → M4 (sia caffe'/amari bar sia dolci cucina) bloccata finche'
+ *               il cameriere non preme "Invia M4".
  *
  * Blocco sequenziale CUCINA: M2 disponibile solo se M1='pronta'; M3 se M2='pronta'.
  *
@@ -63,16 +65,21 @@ function groupByPortata(items, schema) {
 }
 
 // Filtro items "miei" in base a categoria della stazione.
+// Regola M4: gli items in mandata 4 (caffe'/amari bar + dolci cucina)
+// restano nascosti finche' il cameriere non preme "Invia M4"
+// (mandata_stato passa da 'in_attesa' a 'in_preparazione').
 function itemsDellaStazione(orderItems, categoria) {
   const items = orderItems || []
   if (categoria === 'cucina') {
     return items.filter(i => i.categoria === 'cucina' && (i.mandata ?? 1) < 4)
   }
-  // bar
-  return items.filter(i =>
-    i.categoria === 'bar'
-    || (i.mandata === 4 && i.mandata_stato !== 'in_attesa')
-  )
+  // bar: voci bar tranne M4 in_attesa, piu' i dolci cucina M4 sbloccati.
+  return items.filter(i => {
+    const m4Bloccata = i.mandata === 4 && i.mandata_stato === 'in_attesa'
+    if (i.categoria === 'bar')    return !m4Bloccata
+    if (i.categoria === 'cucina') return i.mandata === 4 && !m4Bloccata
+    return false
+  })
 }
 
 const TICK_MS = 15_000
