@@ -89,6 +89,7 @@ export default function CamerierePage({ user, onLogout }) {
     createOrder, addItemsToOrder,
     marcaConsegnata, sbloccaMandata, inviaM4,
     stornaOrdine,
+    confermaPagamentoBancomat,
   } = useOrders()
 
   const { impostazioni } = useImpostazioni()
@@ -238,7 +239,7 @@ export default function CamerierePage({ user, onLogout }) {
   const readyCount = useMemo(() => {
     let n = 0
     for (const o of orders) {
-      if (o.stato === 'stornato' || o.stato === 'attesa_cassa') continue
+      if (o.stato === 'stornato' || o.stato === 'attesa_cassa' || o.stato === 'attesa_bancomat') continue
       const items = o.order_items || []
       if (items.some(i => i.mandata_stato === 'in_finestra')) n++
     }
@@ -373,6 +374,12 @@ export default function CamerierePage({ user, onLogout }) {
                 if (pagamento === 'contanti') {
                   const prefix = eraRiordino ? 'Riordino in cassa:\n' : 'Invia il cliente in cassa con:\n'
                   alert(`${prefix}Tav. ${draft.tavolo} · ${draft.nomeCliente}`)
+                } else if (pagamento === 'bancomat') {
+                  alert(
+                    `Procedi con il POS per Tav. ${draft.tavolo} · ${draft.nomeCliente}.\n` +
+                    `Ricordati di premere "Pagamento effettuato" appena la transazione e' confermata: ` +
+                    `solo allora cucina e bar partono.`
+                  )
                 }
               } catch (e) {
                 alert('Errore creazione ordine: ' + (e.message || e))
@@ -406,6 +413,10 @@ export default function CamerierePage({ user, onLogout }) {
               setView('list')
               setSelectedId(null)
             }}
+            onConfermaBancomat={async () => {
+              await confermaPagamentoBancomat(selectedId)
+              await refetchOrders()
+            }}
           />
         )}
       </main>
@@ -416,16 +427,17 @@ export default function CamerierePage({ user, onLogout }) {
 // -------------------- LISTA TAVOLI --------------------
 
 function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca }) {
-  const [filtro, setFiltro] = useState('tutti') // 'tutti' | 'pronti' | 'attivi' | 'cassa'
+  const [filtro, setFiltro] = useState('tutti') // 'tutti' | 'pronti' | 'attivi' | 'daPagare'
 
-  const pronti  = []
-  const attivi  = []
-  const inCassa = []
-  const stornati = []
+  const pronti    = []
+  const attivi    = []
+  const daPagare  = []   // attesa_cassa (contanti) + attesa_bancomat (POS)
+  const stornati  = []
 
   for (const o of orders) {
-    if (o.stato === 'attesa_cassa') { inCassa.push(o); continue }
-    if (o.stato === 'stornato')     { stornati.push(o); continue }
+    if (o.stato === 'attesa_cassa')    { daPagare.push(o); continue }
+    if (o.stato === 'attesa_bancomat') { daPagare.push(o); continue }
+    if (o.stato === 'stornato')        { stornati.push(o); continue }
     const stato = statoCameriereOrdine(o.order_items || [])
     if (stato === 'pronto') pronti.push(o)
     else attivi.push(o)
@@ -435,17 +447,17 @@ function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca }) {
     tutti: orders.length,
     pronti: pronti.length,
     attivi: attivi.length,
-    cassa: inCassa.length,
+    daPagare: daPagare.length,
   }
 
   const tavoliPronti = pronti.map(o => o.numero_tavolo).slice(0, 6)
 
-  // Lista ordinata per priorità: pronto → attivo → attesa_cassa → stornato
-  const sorted = [...pronti, ...attivi, ...inCassa, ...stornati]
+  // Lista ordinata per priorità: pronto → attivo → da pagare → stornato
+  const sorted = [...pronti, ...attivi, ...daPagare, ...stornati]
   const filtered = (() => {
-    if (filtro === 'pronti') return pronti
-    if (filtro === 'attivi') return attivi
-    if (filtro === 'cassa')  return inCassa
+    if (filtro === 'pronti')   return pronti
+    if (filtro === 'attivi')   return attivi
+    if (filtro === 'daPagare') return daPagare
     return sorted
   })()
 
@@ -498,8 +510,8 @@ function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca }) {
           label="In corso" count={totali.attivi} dotCls="bg-warning"
         />
         <FilterChip
-          active={filtro === 'cassa'} onClick={() => setFiltro('cassa')}
-          label="Conto" count={totali.cassa} dotCls="bg-gold"
+          active={filtro === 'daPagare'} onClick={() => setFiltro('daPagare')}
+          label="Da pagare" count={totali.daPagare} dotCls="bg-gold"
         />
       </div>
 
@@ -584,6 +596,14 @@ function metaStatoOrdine(order, items) {
       bannerCls: 'bg-goldSoft text-gold',
       label: 'ATTESA CASSA',
       pulseBanner: false,
+    }
+  }
+  if (order.stato === 'attesa_bancomat') {
+    return {
+      borderCls: 'border-l-info',
+      bannerCls: 'bg-infoSoft text-info',
+      label: 'PAGAMENTO BANCOMAT',
+      pulseBanner: true,
     }
   }
   const stato = statoCameriereOrdine(items)
@@ -973,7 +993,10 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
   )
 
   const handleBancomat = async () => {
-    const ok = window.confirm(`Pagamento di € ${totale.toFixed(2)} ricevuto con bancomat?`)
+    const ok = window.confirm(
+      `Creare ordine bancomat da € ${totale.toFixed(2)}?\n\n` +
+      `Confermerai il pagamento dopo l'incasso al POS.`
+    )
     if (!ok) return
     setBusy(true)
     try { await onConfirm('bancomat') } finally { setBusy(false) }
@@ -1082,7 +1105,7 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
 
 // -------------------- DETTAGLIO ORDINE --------------------
 
-function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaMandata, onInviaM4, onStorna }) {
+function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaMandata, onInviaM4, onStorna, onConfermaBancomat }) {
   const [order, setOrder] = useState(null)
   // adding: null | true (M4 e' libera dalla creazione, non serve modalita' separata)
   const [adding, setAdding] = useState(false)
@@ -1184,8 +1207,10 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
     )
   }
 
-  const stornato = order.stato === 'stornato'
-  const inCassa  = order.stato === 'attesa_cassa'
+  const stornato         = order.stato === 'stornato'
+  const inCassa          = order.stato === 'attesa_cassa'
+  const inAttesaBancomat = order.stato === 'attesa_bancomat'
+  const azioniBloccate   = stornato || inCassa || inAttesaBancomat
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
   const cucinaGroups = groupByMandata(cucinaItems)
@@ -1199,7 +1224,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
   const m4DaInviare = m4Items.length > 0 && m4Items.some(i =>
     i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
   )
-  const puoInviareM4 = !stornato && !inCassa && m4DaInviare
+  const puoInviareM4 = !azioniBloccate && m4DaInviare
 
   const azioneStorna = async () => {
     const note = window.prompt('Motivo dello storno (opzionale):')
@@ -1258,6 +1283,11 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
             ⏳ In attesa cassa
           </span>
         )}
+        {inAttesaBancomat && (
+          <span className="pill bg-infoSoft text-info border border-info/40 animate-blink">
+            💳 In attesa pagamento bancomat
+          </span>
+        )}
         {stornato && (
           <span className="pill bg-dangerSoft text-danger border border-danger/40 animate-blink">
             ⚠️ Stornato
@@ -1279,6 +1309,48 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         </div>
       )}
 
+      {inAttesaBancomat && (
+        <div className="bg-infoSoft border border-info/60 rounded-card p-3">
+          <p className="font-extrabold text-info mb-1 uppercase tracking-wider text-[12px]">
+            💳 Pagamento al POS in corso
+          </p>
+          <p className="text-[13px] text-text">
+            Fai pagare con bancomat (POS o cellulare). Quando vedi la transazione
+            confermata, premi <strong>"Pagamento effettuato"</strong> qui sotto:
+            cucina e bar partono solo dopo questo click.
+          </p>
+        </div>
+      )}
+
+      {inAttesaBancomat && (
+        <button
+          disabled={busy}
+          onClick={async () => {
+            const ok = window.confirm(
+              `Conferma pagamento bancomat di € ${Number(order.totale).toFixed(2)}?\n\n` +
+              `Cucina e bar partiranno subito con M1.`
+            )
+            if (!ok) return
+            try {
+              setBusy(true)
+              await onConfermaBancomat()
+            } catch (e) {
+              alert('Errore: ' + (e.message || e))
+            } finally {
+              setBusy(false)
+            }
+          }}
+          className="w-full min-h-btn rounded-btn font-extrabold text-lg py-3
+                     bg-gradient-to-br from-info to-info/70 text-bg shadow-cta
+                     active:scale-95 transition-transform
+                     disabled:opacity-50 disabled:active:scale-100
+                     inline-flex items-center justify-center gap-2"
+        >
+          <CreditCard size={22} strokeWidth={3} />
+          {busy ? 'Conferma in corso…' : 'Pagamento effettuato'}
+        </button>
+      )}
+
       {order.note && (
         <p className="text-[13px] bg-warningSoft border border-warning/40 text-warning rounded-card p-2.5">
           Note: {order.note}
@@ -1292,7 +1364,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         numeri={cucinaNumeri}
         groups={cucinaGroups}
         categoria="cucina"
-        disabled={stornato || inCassa}
+        disabled={azioniBloccate}
         onConsegnata={(n) => onMandataConsegnata(n, 'cucina')}
         onSblocca={onSbloccaMandata}
       />
@@ -1304,7 +1376,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         numeri={barNumeri}
         groups={barGroups}
         categoria="bar"
-        disabled={stornato || inCassa}
+        disabled={azioniBloccate}
         onConsegnata={(n) => onMandataConsegnata(n, 'bar')}
         onSblocca={onSbloccaMandata}
       />
@@ -1331,7 +1403,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         </button>
       )}
 
-      {!stornato && !inCassa && (
+      {!azioniBloccate && (
         <button
           onClick={() => setAdding(true)}
           disabled={busy}

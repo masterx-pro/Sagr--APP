@@ -7,11 +7,18 @@ import { getPortataDominante } from '../utils/mandateUtils.js'
  * useOrders v5: data layer per il modello con sblocco mandate + KDS.
  *
  * Stati ordine:
- *   'bozza'        creato ma senza pagamento scelto
- *   'attesa_cassa' cameriere ha scelto contanti, in coda alla cassa
- *   'confermato'   pagato (bancomat o contanti) -> attivo in cucina/bar
- *   'stornato'     in pausa, attende ri-conferma cassa
- *   'completato'   tutto consegnato e chiuso
+ *   'bozza'           creato ma senza pagamento scelto
+ *   'attesa_cassa'    cameriere ha scelto contanti, in coda alla cassa
+ *   'attesa_bancomat' cameriere ha scelto bancomat, attende conferma cameriere post-POS
+ *   'confermato'      pagato (bancomat o contanti) -> attivo in cucina/bar
+ *   'stornato'        in pausa, attende ri-conferma cassa
+ *   'completato'      tutto consegnato e chiuso
+ *
+ * Sblocco M1 al pagamento: quando un ordine passa a 'confermato' (sia
+ * via confermaPagamentoCassa per i contanti, sia via confermaPagamentoBancomat
+ * per il bancomat), gli items mandata=1 di bar+cucina ancora in_attesa/
+ * pre_riscaldo vengono promossi a 'sbloccata' (urgenti). Cosi' il bar parte
+ * subito con le bevande senza ulteriore click del cameriere.
  *
  * Stati mandata (per order_items.mandata_stato, v5):
  *   'in_attesa'       ordine ricevuto, nessuna azione
@@ -123,8 +130,8 @@ export function useOrders({ autoload = false } = {}) {
   //          mandata default = 1; per voci bar caffe'/amari (ordine>=40)
   //          viene forzata a 2 ignorando il parametro.
   //   pagamento: 'bancomat' | 'contanti'
-  //          'bancomat'  -> stato 'confermato' (gia' incassato)
-  //          'contanti'  -> stato 'attesa_cassa'
+  //          'bancomat'  -> stato 'attesa_bancomat' (attende conferma POS dal cameriere)
+  //          'contanti'  -> stato 'attesa_cassa'    (attende cassa)
   const createOrder = useCallback(async ({
     tavolo,
     persone,
@@ -150,9 +157,12 @@ export function useOrders({ autoload = false } = {}) {
 
     let stato, tipo_pagamento, pagato_at
     if (pagamento === 'bancomat') {
-      stato = 'confermato'
+      // v6: il bancomat ora attende conferma POS dal cameriere (CTA
+      // "Pagamento effettuato"); solo allora l'ordine diventa attivo
+      // in cucina/bar e M1 si sblocca.
+      stato = 'attesa_bancomat'
       tipo_pagamento = 'bancomat'
-      pagato_at = new Date().toISOString()
+      pagato_at = null
     } else if (pagamento === 'contanti') {
       stato = 'attesa_cassa'
       tipo_pagamento = 'contanti'
@@ -419,6 +429,7 @@ export function useOrders({ autoload = false } = {}) {
   // Cassa incassa un ordine in 'attesa_cassa' o 'stornato':
   //   stato -> 'confermato'
   //   items in_pausa -> in_attesa (rientrano in coda cucina/bar)
+  //   items M1 in_attesa/pre_riscaldo (bar+cucina) -> 'sbloccata' (vedi sbloccaM1AlPagamento)
   const confermaPagamentoCassa = useCallback(async (orderId, tipoPagamento = 'contanti') => {
     const { error: e1 } = await supabase
       .from('orders')
@@ -437,6 +448,29 @@ export function useOrders({ autoload = false } = {}) {
       .eq('order_id', orderId)
       .eq('mandata_stato', 'in_pausa')
     if (e2) throw e2
+
+    await sbloccaM1AlPagamento(orderId)
+  }, [])
+
+  // Cameriere conferma il pagamento bancomat (post-POS) per un ordine in
+  // 'attesa_bancomat'.
+  //   stato -> 'confermato'
+  //   pagato_at = now()
+  //   items M1 (bar+cucina) in_attesa/pre_riscaldo -> 'sbloccata'
+  // Idempotente: se l'ordine non e' piu' in attesa_bancomat, l'update orders
+  // non tocca nulla e lo sblocco M1 e' un no-op se M1 e' gia' sbloccata.
+  const confermaPagamentoBancomat = useCallback(async (orderId) => {
+    const { error: e1 } = await supabase
+      .from('orders')
+      .update({
+        stato: 'confermato',
+        pagato_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .eq('stato', 'attesa_bancomat')
+    if (e1) throw e1
+
+    await sbloccaM1AlPagamento(orderId)
   }, [])
 
   // -----------------------------------------------------------
@@ -522,6 +556,7 @@ export function useOrders({ autoload = false } = {}) {
     // pagamenti
     stornaOrdine,
     confermaPagamentoCassa,
+    confermaPagamentoBancomat,
     // magazzino
     fetchMagazzinoAlert,
     updatePorzioni,
@@ -534,6 +569,28 @@ export function useOrders({ autoload = false } = {}) {
 // =============================================================
 // HELPERS PRIVATI (fuori dall'hook per evitare re-render)
 // =============================================================
+
+// All'OK pagamento (sia bancomat che contanti) la mandata M1 di un
+// ordine viene sbloccata su BOTH bar e cucina: items in_attesa o
+// pre_riscaldo passano a 'sbloccata' (urgenti per il KDS).
+// Non tocca items gia' in_preparazione/in_finestra/consegnata/in_pausa
+// e nemmeno mandate >= 2 (restano gestite dal cameriere o dal
+// pre-riscaldo automatico post-consegna).
+async function sbloccaM1AlPagamento(orderId) {
+  const now = new Date().toISOString()
+  const { error } = await supabase
+    .from('order_items')
+    .update({
+      mandata_stato: 'sbloccata',
+      sbloccata_at: now,
+      mandata_inviata_at: now,
+    })
+    .eq('order_id', orderId)
+    .eq('mandata', 1)
+    .in('categoria', ['bar', 'cucina'])
+    .in('mandata_stato', ['in_attesa', 'pre_riscaldo'])
+  if (error) console.warn('sbloccaM1AlPagamento', orderId, error.message)
+}
 
 // Decrementa porzioni_disponibili per gli items con traccia_magazzino.
 // items: [{ menuItem, quantita }]
