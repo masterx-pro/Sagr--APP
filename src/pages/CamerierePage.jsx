@@ -313,6 +313,10 @@ export default function CamerierePage({ user, onLogout }) {
               setIsRiordino(true)
               setView('riordino')
             }}
+            onConfermaBancomat={async (orderId) => {
+              await confermaPagamentoBancomat(orderId)
+              await refetchOrders()
+            }}
           />
         )}
         {view === 'new' && (
@@ -427,7 +431,7 @@ export default function CamerierePage({ user, onLogout }) {
 
 // -------------------- LISTA TAVOLI --------------------
 
-function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca }) {
+function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca, onConfermaBancomat }) {
   const [filtro, setFiltro] = useState('tutti') // 'tutti' | 'pronti' | 'attivi' | 'daPagare'
 
   const pronti    = []
@@ -536,6 +540,7 @@ function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca }) {
             onSelect={onSelect}
             onRiordino={onRiordino}
             onSblocca={onSblocca}
+            onConfermaBancomat={onConfermaBancomat}
           />
         ))}
       </ul>
@@ -705,7 +710,7 @@ function prossimaMandataSbloccabile(items) {
   return null
 }
 
-function CompactOrderCard({ order, onSelect, onRiordino, onSblocca }) {
+function CompactOrderCard({ order, onSelect, onRiordino, onSblocca, onConfermaBancomat }) {
   const items = order.order_items || []
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
@@ -721,6 +726,30 @@ function CompactOrderCard({ order, onSelect, onRiordino, onSblocca }) {
   const prossimaSblocco = order.stato === 'confermato'
     ? prossimaMandataSbloccabile(items)
     : null
+
+  // Feedback locale per il pulsante "Pagamento effettuato" (1s verde dopo OK).
+  const [busyBancomat, setBusyBancomat] = useState(false)
+  const [bancomatConfirmed, setBancomatConfirmed] = useState(false)
+  const showBancomatBtn = (order.stato === 'attesa_bancomat' || bancomatConfirmed) && onConfermaBancomat
+
+  const handleConfermaBancomat = async (e) => {
+    e.stopPropagation()
+    const nome = order.nome_cliente ? ` · ${order.nome_cliente}` : ''
+    const ok = window.confirm(
+      `Confermi pagamento bancomat di € ${Number(order.totale).toFixed(2)} per Tav.${order.numero_tavolo}${nome}?`
+    )
+    if (!ok) return
+    setBusyBancomat(true)
+    try {
+      await onConfermaBancomat(order.id)
+      setBancomatConfirmed(true)
+      setTimeout(() => setBancomatConfirmed(false), 1000)
+    } catch (err) {
+      alert('Errore: ' + (err.message || err))
+    } finally {
+      setBusyBancomat(false)
+    }
+  }
 
   return (
     <li
@@ -797,30 +826,50 @@ function CompactOrderCard({ order, onSelect, onRiordino, onSblocca }) {
         </div>
       )}
 
-      {/* row 3: banner stato */}
-      <div className={`flex items-center justify-between px-2.5 py-1.5 rounded-[10px]
-                       text-[11px] font-extrabold uppercase tracking-[0.6px] ${meta.bannerCls}`}>
-        <span className="inline-flex items-center gap-1.5">
-          {meta.pulseBanner && (
-            <span className="relative inline-block w-2 h-2">
-              <span className="absolute inset-0 rounded-full bg-current animate-pulseDot" />
-              <span className="relative inline-block w-2 h-2 rounded-full bg-current" />
-            </span>
+      {/* row 3: banner stato — diventa pulsante "Pagamento effettuato"
+          quando l'ordine e' in attesa di conferma bancomat. */}
+      {showBancomatBtn ? (
+        <button
+          type="button"
+          disabled={busyBancomat || bancomatConfirmed}
+          onClick={handleConfermaBancomat}
+          className={`w-full min-h-[48px] rounded-[10px] px-3 font-extrabold text-[13px] uppercase tracking-[0.6px]
+                      inline-flex items-center justify-center gap-2
+                      active:scale-95 transition-transform
+                      disabled:active:scale-100
+                      ${bancomatConfirmed
+                        ? 'bg-success text-bg shadow-cta'
+                        : 'bg-info text-bg shadow-cta'}`}
+        >
+          {bancomatConfirmed
+            ? '✓ Confermato!'
+            : (busyBancomat ? 'Conferma…' : '💳 Pagamento effettuato →')}
+        </button>
+      ) : (
+        <div className={`flex items-center justify-between px-2.5 py-1.5 rounded-[10px]
+                         text-[11px] font-extrabold uppercase tracking-[0.6px] ${meta.bannerCls}`}>
+          <span className="inline-flex items-center gap-1.5">
+            {meta.pulseBanner && (
+              <span className="relative inline-block w-2 h-2">
+                <span className="absolute inset-0 rounded-full bg-current animate-pulseDot" />
+                <span className="relative inline-block w-2 h-2 rounded-full bg-current" />
+              </span>
+            )}
+            {meta.label}
+          </span>
+          {onRiordino && order.stato === 'confermato' && (
+            <button
+              type="button"
+              onClick={(e) => { e.stopPropagation(); onRiordino(order) }}
+              className="px-2 py-0.5 rounded-badge bg-info/30 text-info text-[10px]
+                         font-extrabold uppercase active:scale-95"
+              title="Aggiungi un riordino veloce"
+            >
+              + Riordino
+            </button>
           )}
-          {meta.label}
-        </span>
-        {onRiordino && order.stato === 'confermato' && (
-          <button
-            type="button"
-            onClick={(e) => { e.stopPropagation(); onRiordino(order) }}
-            className="px-2 py-0.5 rounded-badge bg-info/30 text-info text-[10px]
-                       font-extrabold uppercase active:scale-95"
-            title="Aggiungi un riordino veloce"
-          >
-            + Riordino
-          </button>
-        )}
-      </div>
+        </div>
+      )}
 
       {/* row 4: pulsante sblocco mandata successiva (v5) */}
       {prossimaSblocco != null && onSblocca && (
