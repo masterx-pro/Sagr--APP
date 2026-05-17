@@ -61,23 +61,20 @@ function groupByPortata(items, schema) {
   return groups.filter(g => g.items.length > 0)
 }
 
-// Items "miei" per la stazione (esclude M4 in_attesa per cucina e bar).
+// Items "miei" per la stazione.
+// Regola M4: tutti gli items M4 (dolci + caffe' + amari) vivono sul BAR.
+// La cucina non vede MAI items con mandata=4. Il bar vede M4 solo dopo
+// che il cameriere ha premuto "Sblocca M4" (mandata_stato != 'in_attesa').
 function itemsDellaStazione(orderItems, categoria) {
   const items = orderItems || []
   if (categoria === 'cucina') {
-    return items.filter(i => {
-      if (i.categoria !== 'cucina') return false
-      // M4 cucina (dolci) e' visibile solo se sbloccata dal cameriere
-      if (i.mandata === 4 && i.mandata_stato === 'in_attesa') return false
-      return true
-    })
+    return items.filter(i => i.categoria === 'cucina' && i.mandata !== 4)
   }
-  // bar: voci bar tranne M4 in_attesa, piu' i dolci cucina M4 sbloccati.
+  // bar: voci bar tranne M4 in_attesa (bloccata, attende sblocco cameriere)
   return items.filter(i => {
+    if (i.categoria !== 'bar') return false
     const m4Bloccata = i.mandata === 4 && i.mandata_stato === 'in_attesa'
-    if (i.categoria === 'bar')    return !m4Bloccata
-    if (i.categoria === 'cucina') return i.mandata === 4 && !m4Bloccata
-    return false
+    return !m4Bloccata
   })
 }
 
@@ -580,12 +577,15 @@ function MandataBlockKDS({ numero, items, categoria, impostazioni, disabledBySto
     borderCls = 'border-warning'; bgCls = 'bg-warningSoft/30'
   } else if (prio === 'in_preparazione') {
     borderCls = 'border-warning'; bgCls = 'bg-warningSoft/20'
+  } else if (prio === 'in_attesa') {
+    // Mandata bloccata, attende sblocco cameriere: sfondo grigio scuro
+    borderCls = 'border-borderSoft'; bgCls = 'bg-surfaceElev/40'; extraCls = 'opacity-75'
   }
 
   // Label header
-  let headerIcon = '⬜'
-  let headerLabel = 'IN ATTESA'
-  let headerColor = 'text-textSoft'
+  let headerIcon = '⏳'
+  let headerLabel = 'IN ATTESA SBLOCCO'
+  let headerColor = 'text-textMute'
   if (prio === 'urgente')                 { headerIcon = '🔴'; headerLabel = 'URGENTE · SBLOCCATA'; headerColor = 'text-danger' }
   else if (prio === 'pre_riscaldo_scaduto') { headerIcon = '⚠️'; headerLabel = 'PRE-RISCALDO SCADUTO'; headerColor = 'text-danger' }
   else if (prio === 'pre_riscaldo')       { headerIcon = '🟡'; headerLabel = 'PRE-RISCALDO'; headerColor = 'text-warning' }
@@ -604,11 +604,15 @@ function MandataBlockKDS({ numero, items, categoria, impostazioni, disabledBySto
   const sourceIcon = categoria === 'cucina' ? '🍳' : '🍺'
 
   // CTA: dipende dallo stato corrente
+  // - in_attesa     -> NESSUN pulsante (mandata bloccata, attende sblocco cameriere)
+  // - sbloccata     -> "Da preparare" (gold)            -> tap -> in_preparazione
+  // - pre_riscaldo  -> "Da preparare" (gold, sfondo warning)
+  // - in_preparazione -> "Metti in finestra" (success)  -> tap -> in_finestra
   let ctaLabel = null
   let ctaHandler = null
   let ctaCls = 'bg-gold text-bg'
-  if (stato === 'in_attesa' || stato === 'pre_riscaldo' || stato === 'sbloccata') {
-    ctaLabel = '→ In preparazione'
+  if (stato === 'sbloccata' || stato === 'pre_riscaldo') {
+    ctaLabel = '📋 Da preparare'
     ctaHandler = onInPreparazione
     ctaCls = 'bg-gold text-bg'
   } else if (stato === 'in_preparazione') {
@@ -616,6 +620,7 @@ function MandataBlockKDS({ numero, items, categoria, impostazioni, disabledBySto
     ctaHandler = onInFinestra
     ctaCls = 'bg-success text-bg'
   }
+  // in_attesa: nessuna CTA, mostriamo solo il label "IN ATTESA SBLOCCO".
   const showCta = !disabledByStorno && ctaLabel != null
 
   const renderRiga = ({ nome, q }) => (

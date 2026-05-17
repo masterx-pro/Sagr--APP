@@ -3,6 +3,26 @@ import { supabase } from '../supabaseClient.js'
 import { getMandataPerItem, getTimerPreRiscaldo } from '../utils/servizio.js'
 import { getPortataDominante } from '../utils/mandateUtils.js'
 
+// Regola M4: dolci (sottocategoria='dolce') + bar caffe'/amari (ordine>=40)
+// sono SEMPRE serviti al bar in mandata 4, bloccati finche' il cameriere non
+// preme "Sblocca M4". La trasformazione e' applicata centralmente qui per
+// garantire la regola anche se il MenuSelector permette di selezionarli in
+// M1/M2/M3.
+function isM4Item(menuItem) {
+  if (!menuItem) return false
+  if (menuItem.sottocategoria === 'dolce') return true
+  const ordine = Number(menuItem.ordine ?? 0)
+  if (menuItem.categoria === 'bar' && ordine >= 40) return true
+  return false
+}
+
+function applicaRegolaM4({ menuItem, mandata }) {
+  if (!isM4Item(menuItem)) {
+    return { mandataFinale: mandata, categoriaFinale: menuItem.categoria, forzatoM4: false }
+  }
+  return { mandataFinale: 4, categoriaFinale: 'bar', forzatoM4: true }
+}
+
 /**
  * useOrders v5: data layer per il modello con sblocco mandate + KDS.
  *
@@ -43,7 +63,9 @@ export function useOrders({ autoload = false } = {}) {
   // -----------------------------------------------------------
 
   // Ordini attivi per cameriere/stazioni:
-  //   stato IN ('attesa_cassa','confermato','stornato')
+  //   stato IN ('attesa_cassa','attesa_bancomat','confermato','stornato')
+  // attesa_bancomat: il cameriere ha creato l'ordine ma deve ancora
+  // confermare al POS — il tavolo resta visibile con badge "Da confermare POS".
   // Filtro opzionale per servizio ('pranzo'|'cena').
   const fetchOrdiniAttivi = useCallback(async (servizio = null) => {
     setLoading(true)
@@ -51,7 +73,7 @@ export function useOrders({ autoload = false } = {}) {
     let q = supabase
       .from('orders')
       .select('*, order_items(*)')
-      .in('stato', ['attesa_cassa', 'confermato', 'stornato'])
+      .in('stato', ['attesa_cassa', 'attesa_bancomat', 'confermato', 'stornato'])
       .order('created_at', { ascending: true })
     if (servizio) q = q.eq('servizio', servizio)
     const { data, error } = await q
@@ -196,15 +218,21 @@ export function useOrders({ autoload = false } = {}) {
       // In v5 la mandata e' ESPLICITA: il chiamante decide a quale
       // mandata appartiene ogni riga. Fallback alla derivazione per
       // sottocategoria solo se la riga non specifica `mandata`.
-      const mandata = it.mandata ?? getMandataPerItem(it.menuItem)
+      const mandataRichiesta = it.mandata ?? getMandataPerItem(it.menuItem)
+      // Applica regola M4: dolci/caffe/amari -> sempre bar + M4 + in_attesa,
+      // indipendentemente dalla mandata scelta dal cameriere.
+      const { mandataFinale, categoriaFinale } = applicaRegolaM4({
+        menuItem: it.menuItem,
+        mandata: mandataRichiesta,
+      })
       return {
         order_id: order.id,
         item_id: it.menuItem.id,
         nome_item: it.menuItem.nome,
-        categoria: it.menuItem.categoria,
+        categoria: categoriaFinale,
         quantita: it.quantita,
         prezzo_unitario: it.menuItem.prezzo,
-        mandata,
+        mandata: mandataFinale,
         mandata_stato: 'in_attesa',
       }
     })
@@ -217,6 +245,15 @@ export function useOrders({ autoload = false } = {}) {
     await decrementaPorzioni(items).catch(e =>
       console.warn('Errore decremento porzioni:', e?.message || e)
     )
+
+    console.log('[useOrders] createOrder OK', {
+      orderId: order.id,
+      stato: order.stato,
+      tavolo: order.numero_tavolo,
+      items: rows.map(r => ({
+        nome: r.nome_item, cat: r.categoria, mandata: r.mandata, stato: r.mandata_stato,
+      })),
+    })
 
     return order
   }, [])
@@ -244,16 +281,27 @@ export function useOrders({ autoload = false } = {}) {
     else                                    initialMandataStato = 'in_attesa'
 
     const rows = items.map(it => {
-      const mandata = it.mandata ?? getMandataPerItem(it.menuItem)
+      const mandataRichiesta = it.mandata ?? getMandataPerItem(it.menuItem)
+      // Regola M4 (dolci/caffe/amari): forza bar + M4 + in_attesa anche nei
+      // riordini, indipendentemente dallo statoIniziale richiesto.
+      const { mandataFinale, categoriaFinale, forzatoM4 } = applicaRegolaM4({
+        menuItem: it.menuItem,
+        mandata: mandataRichiesta,
+      })
+      // I forzati M4 restano bloccati (in_attesa) finche' "Sblocca M4".
+      // Se l'ordine e' stornato vincono comunque le regole di pausa.
+      const statoFinale = (forzatoM4 && cur.stato !== 'stornato')
+        ? 'in_attesa'
+        : initialMandataStato
       return {
         order_id: orderId,
         item_id: it.menuItem.id,
         nome_item: it.menuItem.nome,
-        categoria: it.menuItem.categoria,
+        categoria: categoriaFinale,
         quantita: it.quantita,
         prezzo_unitario: it.menuItem.prezzo,
-        mandata,
-        mandata_stato: initialMandataStato,
+        mandata: mandataFinale,
+        mandata_stato: statoFinale,
       }
     })
     const extra = rows.reduce(
@@ -471,6 +519,24 @@ export function useOrders({ autoload = false } = {}) {
     if (e1) throw e1
 
     await sbloccaM1AlPagamento(orderId)
+
+    // Debug: rileggi stato + items per verificare che M1 sia sbloccata.
+    try {
+      const { data: dopo } = await supabase
+        .from('orders')
+        .select('id, stato, order_items(nome_item, categoria, mandata, mandata_stato)')
+        .eq('id', orderId)
+        .single()
+      console.log('[useOrders] confermaPagamentoBancomat OK', {
+        orderId,
+        stato: dopo?.stato,
+        items: (dopo?.order_items || []).map(r => ({
+          nome: r.nome_item, cat: r.categoria, mandata: r.mandata, stato: r.mandata_stato,
+        })),
+      })
+    } catch (e) {
+      console.warn('[useOrders] confermaPagamentoBancomat log fallito:', e?.message || e)
+    }
   }, [])
 
   // -----------------------------------------------------------

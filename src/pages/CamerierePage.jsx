@@ -781,7 +781,9 @@ function CompactOrderCard({ order, onSelect, onRiordino, onSblocca }) {
           ))}
           {barNumeri.map(n => {
             const sDisplay = getStatoMandataDisplay(barGroups[n])
-            const isBarBlocked = n === 2 && barGroups[n].every(i => i.mandata_stato === 'in_attesa')
+            // Bar M4 (caffe' + amari + dolci) e' "bloccata" finche' il cameriere
+            // non preme "Sblocca M4". Le altre mandate bar partono automatiche.
+            const isBarBlocked = n === 4 && barGroups[n].every(i => i.mandata_stato === 'in_attesa')
             return (
               <MandataIndicator
                 key={`b-${n}`}
