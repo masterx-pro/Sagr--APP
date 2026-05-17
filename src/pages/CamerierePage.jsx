@@ -47,16 +47,16 @@ function playReadyBeep() {
 // -------------------- HELPER STATI ORDINE --------------------
 
 // Stato "globale" di un ordine per il cameriere, dal punto di vista visivo.
-//   'pronto'   -> almeno una mandata ha stato 'pronta' (da portare)
-//   'attivo'   -> tutto in preparazione/attesa
+//   'pronto'   -> almeno una mandata ha stato 'in_finestra' (da portare)
+//   'attivo'   -> tutto in preparazione/attesa/pre_riscaldo/sbloccata
 //   'consegnato' -> tutte le mandate consegnate
 function statoCameriereOrdine(items) {
   if (!items || items.length === 0) return 'attivo'
   const tutti = items
   const tuttiConsegnati = tutti.every(i => i.mandata_stato === 'consegnata')
   if (tuttiConsegnati) return 'consegnato'
-  const haPronto = tutti.some(i => i.mandata_stato === 'pronta')
-  if (haPronto) return 'pronto'
+  const haInFinestra = tutti.some(i => i.mandata_stato === 'in_finestra')
+  if (haInFinestra) return 'pronto'
   return 'attivo'
 }
 
@@ -87,7 +87,7 @@ export default function CamerierePage({ user, onLogout }) {
   const {
     orders, fetchOrdiniAttivi,
     createOrder, addItemsToOrder,
-    markMandataConsegnata, inviaM4,
+    marcaConsegnata, sbloccaMandata, inviaM4,
     stornaOrdine,
   } = useOrders()
 
@@ -142,14 +142,14 @@ export default function CamerierePage({ user, onLogout }) {
     return () => { supabase.removeChannel(channel) }
   }, [refetchOrders, servizioCorrente])
 
-  // Notifica sonora: quando un ordine ha NUOVE mandate 'pronte'
+  // Notifica sonora: quando un ordine ha NUOVE mandate 'in_finestra' (v5)
   const lastReadyRef = useRef(null)
   useEffect(() => {
     const readySet = new Set()
     for (const o of orders) {
       const groups = groupByMandata(o.order_items || [])
       for (const m of Object.keys(groups)) {
-        if (getStatoMandataDisplay(groups[m]) === 'pronta') {
+        if (getStatoMandataDisplay(groups[m]) === 'in_finestra') {
           readySet.add(`${o.id}::${m}`)
         }
       }
@@ -234,13 +234,13 @@ export default function CamerierePage({ user, onLogout }) {
     </button>
   )
 
-  // Conta gli ordini con almeno una mandata pronta da portare (per badge campana)
+  // Conta le mandate in finestra (v5) da portare al tavolo: badge campana
   const readyCount = useMemo(() => {
     let n = 0
     for (const o of orders) {
       if (o.stato === 'stornato' || o.stato === 'attesa_cassa') continue
       const items = o.order_items || []
-      if (items.some(i => i.mandata_stato === 'pronta')) n++
+      if (items.some(i => i.mandata_stato === 'in_finestra')) n++
     }
     return n
   }, [orders])
@@ -291,6 +291,14 @@ export default function CamerierePage({ user, onLogout }) {
             orders={orders}
             onNew={() => setView('new')}
             onSelect={(id) => { setSelectedId(id); setView('detail') }}
+            onSblocca={async (orderId, mandataNum) => {
+              try {
+                await sbloccaMandata(orderId, mandataNum)
+                await refetchOrders()
+              } catch (e) {
+                alert('Errore sblocco mandata: ' + (e.message || e))
+              }
+            }}
             onRiordino={(order) => {
               const nomeBase = (order.nome_cliente || '').replace(/\s*\(riordino\)\s*$/i, '').trim()
               setDraft({
@@ -381,7 +389,11 @@ export default function CamerierePage({ user, onLogout }) {
               await refetchOrders()
             }}
             onMandataConsegnata={async (mandataNum, categoria) => {
-              await markMandataConsegnata(selectedId, mandataNum, categoria)
+              await marcaConsegnata(selectedId, mandataNum, categoria)
+              await refetchOrders()
+            }}
+            onSbloccaMandata={async (mandataNum) => {
+              await sbloccaMandata(selectedId, mandataNum)
               await refetchOrders()
             }}
             onInviaM4={async () => {
@@ -403,7 +415,7 @@ export default function CamerierePage({ user, onLogout }) {
 
 // -------------------- LISTA TAVOLI --------------------
 
-function ListaTavoli({ orders, onNew, onSelect, onRiordino }) {
+function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca }) {
   const [filtro, setFiltro] = useState('tutti') // 'tutti' | 'pronti' | 'attivi' | 'cassa'
 
   const pronti  = []
@@ -510,6 +522,7 @@ function ListaTavoli({ orders, onNew, onSelect, onRiordino }) {
             order={o}
             onSelect={onSelect}
             onRiordino={onRiordino}
+            onSblocca={onSblocca}
           />
         ))}
       </ul>
@@ -590,12 +603,32 @@ function metaStatoOrdine(order, items) {
       pulseBanner: false,
     }
   }
-  const partial = items.some(i => i.mandata_stato === 'in_preparazione' || i.mandata_stato === 'pronta')
+  const urgente = items.some(i => i.mandata_stato === 'sbloccata')
+  if (urgente) {
+    return {
+      borderCls: 'border-l-danger',
+      bannerCls: 'bg-dangerSoft text-danger',
+      label: 'URGENTE · ESCI SUBITO',
+      pulseBanner: true,
+    }
+  }
+  const partial = items.some(i =>
+    i.mandata_stato === 'in_preparazione' || i.mandata_stato === 'in_finestra'
+  )
   if (partial) {
     return {
       borderCls: 'border-l-warning',
       bannerCls: 'bg-warningSoft text-warning',
       label: 'IN PREPARAZIONE',
+      pulseBanner: false,
+    }
+  }
+  const preRiscaldo = items.some(i => i.mandata_stato === 'pre_riscaldo')
+  if (preRiscaldo) {
+    return {
+      borderCls: 'border-l-warning',
+      bannerCls: 'bg-warningSoft text-warning',
+      label: 'PRE-RISCALDO',
       pulseBanner: false,
     }
   }
@@ -608,14 +641,50 @@ function metaStatoOrdine(order, items) {
 }
 
 function statoMandataToIndicator(stato) {
+  // L'aggregato di getStatoMandataDisplay (v5) usa direttamente i nomi
+  // degli stati salvati su DB, quindi passa-through con un fallback.
   if (stato === 'consegnata')       return 'consegnata'
-  if (stato === 'pronta')           return 'pronto'
+  if (stato === 'in_finestra')      return 'in_finestra'
   if (stato === 'in_preparazione')  return 'in_preparazione'
-  if (stato === 'in_pausa')         return 'bloccata'
+  if (stato === 'sbloccata')        return 'sbloccata'
+  if (stato === 'pre_riscaldo')     return 'pre_riscaldo'
+  if (stato === 'in_pausa')         return 'in_pausa'
   return 'in_attesa'
 }
 
-function CompactOrderCard({ order, onSelect, onRiordino }) {
+// Restituisce il numero della prossima mandata cucina sbloccabile
+// (cioe' M(N-1) tutta in_finestra/consegnata, oppure N=1), o null
+// se non c'e' nulla da sbloccare. M4 e' SEMPRE sbloccata manualmente
+// dal cameriere a fine pasto (caffe'/dolci/amari) — non automatico.
+function prossimaMandataSbloccabile(items) {
+  const cucinaGroups = groupByMandata((items || []).filter(i => i.categoria === 'cucina'))
+  // Considera anche items M4 bar (caffe'/amari) che vivono in barGroups.
+  // Per le M 1..3 ci basta cucina; per M4 includiamo anche bar.
+  const barGroups = groupByMandata((items || []).filter(i => i.categoria === 'bar'))
+
+  const numeri = [1, 2, 3, 4].filter(n => cucinaGroups[n] || barGroups[n])
+  for (const n of numeri) {
+    const itemsN = [...(cucinaGroups[n] || []), ...(barGroups[n] || [])]
+    const haNonSbloccata = itemsN.some(i =>
+      i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
+    )
+    if (!haNonSbloccata) continue
+
+    if (n > 1) {
+      const itemsPrev = cucinaGroups[n - 1] || []
+      if (itemsPrev.length > 0) {
+        const prevPronta = itemsPrev.every(i =>
+          i.mandata_stato === 'in_finestra' || i.mandata_stato === 'consegnata'
+        )
+        if (!prevPronta) continue
+      }
+    }
+    return n
+  }
+  return null
+}
+
+function CompactOrderCard({ order, onSelect, onRiordino, onSblocca }) {
   const items = order.order_items || []
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
@@ -627,6 +696,10 @@ function CompactOrderCard({ order, onSelect, onRiordino }) {
   const minuti = Math.max(0, Math.floor((Date.now() - new Date(order.created_at)) / 60000))
   const meta = metaStatoOrdine(order, items)
   const isContanti = order.tipo_pagamento === 'contanti'
+
+  const prossimaSblocco = order.stato === 'confermato'
+    ? prossimaMandataSbloccabile(items)
+    : null
 
   return (
     <li
@@ -725,6 +798,21 @@ function CompactOrderCard({ order, onSelect, onRiordino }) {
           </button>
         )}
       </div>
+
+      {/* row 4: pulsante sblocco mandata successiva (v5) */}
+      {prossimaSblocco != null && onSblocca && (
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); onSblocca(order.id, prossimaSblocco) }}
+          className="w-full min-h-[48px] rounded-btn font-extrabold text-[15px] tracking-[0.3px]
+                     bg-gradient-to-br from-gold to-goldDeep text-bg shadow-cta
+                     active:scale-95 transition-transform inline-flex items-center justify-center gap-2"
+        >
+          {prossimaSblocco === 4
+            ? '☕ Sblocca M4 (dolci · caffè · amari) →'
+            : `🍽️ Esci con M${prossimaSblocco} →`}
+        </button>
+      )}
     </li>
   )
 }
@@ -994,7 +1082,7 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
 
 // -------------------- DETTAGLIO ORDINE --------------------
 
-function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInviaM4, onStorna }) {
+function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaMandata, onInviaM4, onStorna }) {
   const [order, setOrder] = useState(null)
   // adding: null | true (M4 e' libera dalla creazione, non serve modalita' separata)
   const [adding, setAdding] = useState(false)
@@ -1105,10 +1193,12 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
   const cucinaNumeri = getNumeriMandata(cucinaItems)
   const barNumeri    = getNumeriMandata(barItems)
 
-  // "Invia M4" disponibile se l'ordine ha items M4 ancora in_attesa
-  // (non ancora rilasciati al bar) e non e' stornato/in cassa.
+  // "Sblocca M4" disponibile se l'ordine ha items M4 ancora in_attesa
+  // o in pre_riscaldo (cioe' non ancora sbloccati) e non e' stornato/in cassa.
   const m4Items = items.filter(i => i.mandata === 4)
-  const m4DaInviare = m4Items.length > 0 && m4Items.some(i => i.mandata_stato === 'in_attesa')
+  const m4DaInviare = m4Items.length > 0 && m4Items.some(i =>
+    i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
+  )
   const puoInviareM4 = !stornato && !inCassa && m4DaInviare
 
   const azioneStorna = async () => {
@@ -1198,12 +1288,13 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
       {/* Cucina */}
       <SezioneMandate
         titolo="🍳 Cucina"
-        colore="text-cucina"
+        colore="text-wine"
         numeri={cucinaNumeri}
         groups={cucinaGroups}
         categoria="cucina"
         disabled={stornato || inCassa}
         onConsegnata={(n) => onMandataConsegnata(n, 'cucina')}
+        onSblocca={onSbloccaMandata}
       />
 
       {/* Bar */}
@@ -1215,13 +1306,14 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
         categoria="bar"
         disabled={stornato || inCassa}
         onConsegnata={(n) => onMandataConsegnata(n, 'bar')}
+        onSblocca={onSbloccaMandata}
       />
 
       {puoInviareM4 && (
         <button
           disabled={busy}
           onClick={async () => {
-            if (!window.confirm('Inviare M4 al bar adesso?\nDolci, caffe\' e amari verranno preparati.')) return
+            if (!window.confirm('Sbloccare M4?\nDolci, caffè e amari diventano URGENTI in cucina/bar.')) return
             try {
               setBusy(true)
               await onInviaM4()
@@ -1231,9 +1323,9 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
               setBusy(false)
             }
           }}
-          className="w-full min-h-btn rounded-btn font-extrabold py-3 text-text
+          className="w-full min-h-btn rounded-btn font-extrabold py-3 text-bg
                      bg-gradient-to-br from-gold to-goldDeep shadow-cta
-                     active:scale-95 transition-transform animate-pulseUrgent"
+                     active:scale-95 transition-transform"
         >
           ☕ Sblocca M4 — Dolci · Caffè · Amari ({m4Items.reduce((s, i) => s + i.quantita, 0)} pezzi)
         </button>
@@ -1276,7 +1368,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
   )
 }
 
-function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, onConsegnata }) {
+function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, onConsegnata, onSblocca }) {
   if (numeri.length === 0) return null
   return (
     <div>
@@ -1284,53 +1376,63 @@ function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, o
         {titolo}
       </h3>
       <ul className="flex flex-col gap-2.5">
-        {numeri.map(n => (
-          <MandataRow
-            key={n}
-            numero={n}
-            items={groups[n]}
-            categoria={categoria}
-            disabled={disabled}
-            onConsegnata={() => onConsegnata(n)}
-          />
-        ))}
+        {numeri.map((n, idx) => {
+          // Mandata sbloccabile se M(n-1) e' completamente in_finestra/consegnata
+          // e M(n) ha items in_attesa o pre_riscaldo. Solo per cucina (e M4 bar).
+          const prevN = numeri[idx - 1]
+          const prevDone = idx === 0 || (
+            prevN != null && (groups[prevN] || []).every(i =>
+              i.mandata_stato === 'in_finestra' || i.mandata_stato === 'consegnata'
+            )
+          )
+          const haDaSbloccare = (groups[n] || []).some(i =>
+            i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
+          )
+          // M4 bar (caffe'/amari): sblocco SEMPRE manuale. Per altre mandate
+          // bar non mostriamo lo sblocco (parte automaticamente con l'ordine).
+          const offerSblocco = !disabled && haDaSbloccare && prevDone &&
+            (categoria === 'cucina' || (categoria === 'bar' && n === 4))
+
+          return (
+            <MandataRow
+              key={n}
+              numero={n}
+              items={groups[n]}
+              categoria={categoria}
+              disabled={disabled}
+              onConsegnata={() => onConsegnata(n)}
+              onSblocca={offerSblocco ? () => onSblocca && onSblocca(n) : null}
+            />
+          )
+        })}
       </ul>
     </div>
   )
 }
 
-function MandataRow({ numero, items, categoria, disabled, onConsegnata }) {
+const MANDATA_ROW_META = {
+  in_attesa:       { borderCls: 'border-borderSoft', textCls: 'text-textSoft',  icon: '⬜', label: 'IN ATTESA' },
+  pre_riscaldo:    { borderCls: 'border-warning',    textCls: 'text-warning',   icon: '🟡', label: 'PRE-RISCALDO' },
+  sbloccata:       { borderCls: 'border-danger',     textCls: 'text-danger',    icon: '🔴', label: 'URGENTE' },
+  in_preparazione: { borderCls: 'border-warning',    textCls: 'text-warning',   icon: '🔄', label: 'IN PREPARAZIONE' },
+  in_finestra:     { borderCls: 'border-success',    textCls: 'text-success',   icon: '🪟', label: 'IN FINESTRA' },
+  consegnata:      { borderCls: 'border-borderSoft', textCls: 'text-textMute',  icon: '✅', label: 'CONSEGNATA' },
+  in_pausa:        { borderCls: 'border-danger',     textCls: 'text-danger',    icon: '⏸',  label: 'IN PAUSA' },
+}
+
+function MandataRow({ numero, items, categoria, disabled, onConsegnata, onSblocca }) {
   const stato = getStatoMandataDisplay(items)
   const [busy, setBusy] = useState(false)
+  const meta = MANDATA_ROW_META[stato] || MANDATA_ROW_META.in_attesa
 
-  const barM2Bloccata = categoria === 'bar' && numero === 2
-    && items.every(i => i.mandata_stato === 'in_attesa')
-
-  // Mapping stato → token visivo coerente con MandataBlock
-  let cls = 'border-warning bg-warningSoft/40 text-warning'
-  let icon = '⏳'
-  let label = 'IN ATTESA'
-  if (stato === 'consegnata') {
-    cls = 'border-textMute bg-[rgba(196,168,130,0.06)] text-textMute opacity-70'
-    icon = '✓'; label = 'CONSEGNATA'
-  } else if (stato === 'pronta') {
-    cls = 'border-success bg-successSoft text-success'
-    icon = '✅'; label = 'PRONTA'
-  } else if (stato === 'in_pausa') {
-    cls = 'border-danger bg-dangerSoft text-danger'
-    icon = '⏸️'; label = 'IN PAUSA'
-  } else if (stato === 'in_preparazione') {
-    cls = 'border-warning bg-warningSoft text-warning'
-    icon = '🔄'; label = 'IN PREPARAZIONE'
-  } else if (barM2Bloccata) {
-    cls = 'border-borderSoft bg-[rgba(255,255,255,0.04)] text-textMute opacity-70'
-    icon = '🔒'; label = 'BLOCCATA'
-  }
-
+  const isUrgente = stato === 'sbloccata'
+  const isCollapsed = stato === 'consegnata'
   const sourceIcon = categoria === 'cucina' ? '🍳' : '🍺'
 
   return (
-    <li className={`relative rounded-card p-3 border-[1.5px] ${cls.split(' ').find(c => c.startsWith('border'))} bg-surface shadow-sm`}>
+    <li className={`relative rounded-card p-3 border-[1.5px] ${meta.borderCls} bg-surface shadow-sm
+                    ${isCollapsed ? 'opacity-60' : ''}
+                    ${isUrgente ? 'animate-pulseUrgent' : ''}`}>
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
@@ -1342,32 +1444,54 @@ function MandataRow({ numero, items, categoria, disabled, onConsegnata }) {
             <div className="text-[14px] font-extrabold tracking-[0.4px] text-text">
               MANDATA {numero}
             </div>
-            <div className={`text-[11px] font-bold uppercase tracking-[0.4px] mt-[1px] ${cls.split(' ').find(c => c.startsWith('text'))}`}>
-              {icon} {label}
+            <div className={`text-[11px] font-bold uppercase tracking-[0.4px] mt-[1px] ${meta.textCls}`}>
+              {meta.icon} {meta.label}
             </div>
           </div>
         </div>
       </div>
 
-      {/* Items */}
-      <ul className="flex flex-col gap-1.5">
-        {items.map(it => (
-          <li key={it.id}
-              className="flex items-center gap-2.5 px-2.5 py-2 rounded-[10px]
-                         bg-[rgba(196,168,130,0.06)] border border-borderSoft">
-            <span className="min-w-[36px] h-[28px] px-2 rounded-badge inline-flex items-center justify-center
-                             bg-surfaceElev text-text font-extrabold text-[14px] tabular-nums border border-border">
-              {it.quantita}×
-            </span>
-            <span className={`flex-1 text-[14px] font-semibold break-words
-                              ${stato === 'consegnata' ? 'line-through text-textMute' : 'text-text'}`}>
-              {it.nome_item}
-            </span>
-          </li>
-        ))}
-      </ul>
+      {/* Items (nascosti se consegnata: solo sommario) */}
+      {!isCollapsed ? (
+        <ul className="flex flex-col gap-1.5">
+          {items.map(it => (
+            <li key={it.id}
+                className="flex items-center gap-2.5 px-2.5 py-2 rounded-[10px]
+                           bg-[rgba(196,168,130,0.06)] border border-borderSoft">
+              <span className="min-w-[36px] h-[28px] px-2 rounded-badge inline-flex items-center justify-center
+                               bg-surfaceElev text-text font-extrabold text-[14px] tabular-nums border border-border">
+                {it.quantita}×
+              </span>
+              <span className="flex-1 text-[14px] font-semibold break-words text-text">
+                {it.nome_item}
+              </span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <p className="text-[12px] text-textMute font-semibold">
+          {items.map(i => `${i.nome_item} ×${i.quantita}`).join(' · ')}
+        </p>
+      )}
 
-      {stato === 'pronta' && !disabled && (
+      {/* CTA: Sblocca (se applicabile) */}
+      {!disabled && onSblocca && (
+        <button
+          disabled={busy}
+          onClick={async () => {
+            setBusy(true)
+            try { await onSblocca() } finally { setBusy(false) }
+          }}
+          className="w-full mt-2.5 min-h-[48px] rounded-btn font-extrabold text-[14px] tracking-[0.3px]
+                     bg-gradient-to-br from-gold to-goldDeep text-bg shadow-cta
+                     active:scale-95 transition-transform inline-flex items-center justify-center gap-2"
+        >
+          {numero === 4 ? '☕ Sblocca M4 →' : `🍽️ Esci con M${numero} →`}
+        </button>
+      )}
+
+      {/* CTA: Consegnata (solo se in_finestra) */}
+      {stato === 'in_finestra' && !disabled && (
         <button
           disabled={busy}
           onClick={async () => {
@@ -1377,7 +1501,7 @@ function MandataRow({ numero, items, categoria, disabled, onConsegnata }) {
           className="w-full mt-2.5 min-h-[44px] rounded-btn font-extrabold text-[14px]
                      bg-success text-bg active:scale-95 transition-transform shadow-[0_3px_0_#3F2A1F]"
         >
-          → Consegnata al tavolo
+          ✅ Ho portato M{numero} al tavolo
         </button>
       )}
     </li>

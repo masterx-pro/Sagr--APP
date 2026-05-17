@@ -173,6 +173,37 @@ export function getTimerMandateMinuti(impostazioni) {
 }
 
 // =============================================================
+// PRE-RISCALDO (v5)
+// =============================================================
+//
+// Tempo (minuti) tra "M(N-1) in finestra" e "inizio pre-riscaldo M(N)".
+// La chiave letta dalle impostazioni e' legata alla PORTATA della mandata
+// da pre-riscaldare (es. se M(N) sono primi -> pre_riscaldo_primo_min).
+
+const PRE_RISCALDO_DEFAULTS = {
+  antipasto: 10,
+  primo:     15,
+  secondo:   15,
+  contorno:  12,
+  dolce:      8,
+}
+
+export function getTimerPreRiscaldo(portata, impostazioni) {
+  const def = PRE_RISCALDO_DEFAULTS[portata] ?? 10
+  return leggiMin(impostazioni, `pre_riscaldo_${portata}_min`, def)
+}
+
+// Tutti i timer pre-riscaldo letti come mappa { portata: minuti }.
+// Utile per UI admin.
+export function getPreRiscaldoMappa(impostazioni) {
+  const out = {}
+  for (const p of Object.keys(PRE_RISCALDO_DEFAULTS)) {
+    out[p] = getTimerPreRiscaldo(p, impostazioni)
+  }
+  return out
+}
+
+// =============================================================
 // FASCE ORARIE (v4)
 // =============================================================
 //

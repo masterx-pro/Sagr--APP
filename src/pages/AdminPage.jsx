@@ -406,6 +406,24 @@ function SeparatorePortata({ label }) {
   )
 }
 
+function StockBadge({ item }) {
+  if (!item?.traccia_magazzino) return null
+  const disp = Number(item.porzioni_disponibili ?? 0)
+  const soglia = Number(item.soglia_alert ?? 0)
+  const meta = disp === 0
+    ? { cls: 'bg-danger text-bg', label: 'ESAURITO' }
+    : disp <= Math.max(1, Math.floor(soglia / 2))
+      ? { cls: 'bg-dangerSoft text-danger border border-danger/40', label: `🔴 ${disp} rimaste` }
+      : disp <= soglia
+        ? { cls: 'bg-warningSoft text-warning border border-warning/40', label: `⚠️ ${disp} rimaste` }
+        : { cls: 'bg-successSoft text-success border border-success/40', label: `✓ ${disp}` }
+  return (
+    <span className={`pill text-[10.5px] tabular-nums ${meta.cls}`}>
+      {meta.label}
+    </span>
+  )
+}
+
 function ListaMenu({ titolo, colore, items, onToggle, editingId, onEdit, onSave, portate }) {
   const renderItem = (i) => (
     <li key={i.id} className="card">
@@ -418,9 +436,12 @@ function ListaMenu({ titolo, colore, items, onToggle, editingId, onEdit, onSave,
       ) : (
         <div className="flex items-start gap-2">
           <div className="flex-1 min-w-0">
-            <p className={`font-semibold break-words whitespace-normal ${i.attivo ? '' : 'line-through opacity-50'}`}>
-              {i.nome}
-            </p>
+            <div className="flex items-center gap-2 flex-wrap">
+              <p className={`font-semibold break-words whitespace-normal ${i.attivo ? '' : 'line-through opacity-50'}`}>
+                {i.nome}
+              </p>
+              <StockBadge item={i} />
+            </div>
             <p className="text-sm opacity-80">€ {Number(i.prezzo).toFixed(2)}</p>
           </div>
           <button
@@ -467,6 +488,11 @@ function FormModificaItem({ item, onSave, onCancel }) {
   const [sottocategoria, setSottocategoria] = useState(item.sottocategoria || 'antipasto')
   const [ordine, setOrdine] = useState(String(item.ordine ?? 0))
   const [saving, setSaving] = useState(false)
+  // Magazzino (v5)
+  const [tracciaMagazzino, setTracciaMagazzino] = useState(!!item.traccia_magazzino)
+  const [porzioniTot, setPorzioniTot]     = useState(String(item.porzioni_totali ?? ''))
+  const [porzioniDisp, setPorzioniDisp]   = useState(String(item.porzioni_disponibili ?? ''))
+  const [sogliaAlert, setSogliaAlert]     = useState(String(item.soglia_alert ?? 20))
 
   const submit = async (e) => {
     e.preventDefault()
@@ -485,6 +511,20 @@ function FormModificaItem({ item, onSave, onCancel }) {
         ordine: isNaN(o) ? 0 : o,
       }
       patch.sottocategoria = categoria === 'cucina' ? sottocategoria : null
+      // Magazzino v5
+      patch.traccia_magazzino = tracciaMagazzino
+      if (tracciaMagazzino) {
+        const tot  = parseInt(String(porzioniTot), 10)
+        const disp = parseInt(String(porzioniDisp), 10)
+        const sog  = parseInt(String(sogliaAlert), 10)
+        patch.porzioni_totali       = isNaN(tot)  ? null : Math.max(0, tot)
+        patch.porzioni_disponibili  = isNaN(disp) ? null : Math.max(0, disp)
+        patch.soglia_alert          = isNaN(sog)  ? 20   : Math.max(0, sog)
+      } else {
+        patch.porzioni_totali       = null
+        patch.porzioni_disponibili  = null
+        // soglia_alert: lasciala invariata; tornera' utile se ri-abiliti il tracking.
+      }
       await onSave(item.id, patch)
     } finally {
       setSaving(false)
@@ -546,6 +586,59 @@ function FormModificaItem({ item, onSave, onCancel }) {
           onChange={e => setOrdine(e.target.value)}
         />
       </label>
+
+      {/* Magazzino v5 */}
+      <div className="rounded-card border border-borderSoft bg-surfaceElev/60 p-3 space-y-2">
+        <label className="flex items-center justify-between gap-3 cursor-pointer">
+          <div>
+            <span className="text-[13px] font-bold text-text">📦 Traccia porzioni</span>
+            <p className="text-[11px] text-textSoft font-semibold">
+              Decrementa ad ogni ordine. Mostra alert al cameriere sotto soglia.
+            </p>
+          </div>
+          <input
+            type="checkbox"
+            checked={tracciaMagazzino}
+            onChange={e => setTracciaMagazzino(e.target.checked)}
+            className="w-5 h-5 accent-gold"
+          />
+        </label>
+        {tracciaMagazzino && (
+          <div className="grid grid-cols-3 gap-2">
+            <label className="block">
+              <span className="text-[11px] opacity-80 uppercase tracking-wider">Totali</span>
+              <input
+                className="input-base mt-1 tabular-nums"
+                inputMode="numeric"
+                value={porzioniTot}
+                onChange={e => setPorzioniTot(e.target.value)}
+                placeholder="100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] opacity-80 uppercase tracking-wider">Rimaste</span>
+              <input
+                className="input-base mt-1 tabular-nums"
+                inputMode="numeric"
+                value={porzioniDisp}
+                onChange={e => setPorzioniDisp(e.target.value)}
+                placeholder="100"
+              />
+            </label>
+            <label className="block">
+              <span className="text-[11px] opacity-80 uppercase tracking-wider">Soglia ⚠</span>
+              <input
+                className="input-base mt-1 tabular-nums"
+                inputMode="numeric"
+                value={sogliaAlert}
+                onChange={e => setSogliaAlert(e.target.value)}
+                placeholder="20"
+              />
+            </label>
+          </div>
+        )}
+      </div>
+
       <div className="grid grid-cols-2 gap-2 pt-1">
         <button
           type="button"
@@ -571,6 +664,8 @@ function FormModificaItem({ item, onSave, onCancel }) {
 
 function TabRiepilogo() {
   const [stats, setStats] = useState(null)
+  const [magazzinoAlert, setMagazzinoAlert] = useState([])
+  const [magazzinoLoading, setMagazzinoLoading] = useState(false)
 
   const load = async () => {
     const { data: tutti } = await supabase
@@ -616,12 +711,30 @@ function TabRiepilogo() {
     })
   }
 
+  const loadMagazzino = async () => {
+    setMagazzinoLoading(true)
+    const { data } = await supabase
+      .from('menu_items')
+      .select('id, nome, categoria, porzioni_totali, porzioni_disponibili, soglia_alert, traccia_magazzino, attivo')
+      .eq('traccia_magazzino', true)
+      .eq('attivo', true)
+    const filtrati = (data || []).filter(it => {
+      const disp = it.porzioni_disponibili
+      const soglia = it.soglia_alert ?? 0
+      return disp != null && disp <= soglia
+    }).sort((a, b) => Number(a.porzioni_disponibili) - Number(b.porzioni_disponibili))
+    setMagazzinoAlert(filtrati)
+    setMagazzinoLoading(false)
+  }
+
   useEffect(() => {
     load()
+    loadMagazzino()
     const channel = supabase
       .channel('admin-stats')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'orders' }, load)
       .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'order_items' }, load)
+      .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'menu_items' }, loadMagazzino)
       .subscribe()
     return () => { supabase.removeChannel(channel) }
   }, [])
@@ -701,6 +814,53 @@ function TabRiepilogo() {
       <div className="grid grid-cols-1 gap-2">
         <StatBox label="Ordini aperti" value={stats.ordiniAperti}
                  highlight={stats.ordiniAperti > 0} />
+      </div>
+
+      {/* Alert magazzino — voci tracciate sotto soglia */}
+      <div className="bg-surface border border-borderSoft rounded-card p-4 shadow-sm">
+        <div className="flex items-center justify-between mb-2">
+          <h3 className="text-[14px] font-extrabold text-text">⚠️ Alert magazzino</h3>
+          <button
+            type="button"
+            onClick={loadMagazzino}
+            disabled={magazzinoLoading}
+            className={`text-[12px] font-bold text-textSoft px-2 py-1 rounded-badge
+                        border border-borderSoft active:scale-95 transition-transform
+                        disabled:opacity-50 ${magazzinoLoading ? 'animate-spin' : ''}`}
+            title="Aggiorna stock"
+          >
+            🔄
+          </button>
+        </div>
+        {magazzinoAlert.length === 0 ? (
+          <p className="text-textSoft text-[13px] font-semibold">
+            Tutti gli items tracciati sono sopra soglia ✅
+          </p>
+        ) : (
+          <ul className="flex flex-col gap-1.5">
+            {magazzinoAlert.map(it => {
+              const disp = Number(it.porzioni_disponibili)
+              const soglia = Number(it.soglia_alert || 0)
+              const cls = disp === 0
+                ? 'text-danger'
+                : disp <= Math.max(1, Math.floor(soglia / 2))
+                  ? 'text-danger'
+                  : 'text-warning'
+              return (
+                <li key={it.id}
+                    className="flex items-center justify-between px-2.5 py-1.5 rounded-badge
+                               bg-surfaceElev border border-borderSoft text-[13px]">
+                  <span className="font-semibold text-text truncate flex items-center gap-2">
+                    {it.categoria === 'cucina' ? '🍳' : '🍺'} {it.nome}
+                  </span>
+                  <span className={`font-extrabold tabular-nums ${cls}`}>
+                    {disp === 0 ? 'ESAURITO' : `${disp} / ${it.porzioni_totali ?? '—'}`}
+                  </span>
+                </li>
+              )
+            })}
+          </ul>
+        )}
       </div>
     </div>
   )
@@ -952,6 +1112,17 @@ const CHIAVI_TIMER = [
   { chiave: 'tempo_consumo_dolce_min',        label: 'Consumo dolci (min)' },
 ]
 
+// v5: timer pre-riscaldo cucina (min) — tempo dopo cui la cucina inizia
+// a riscaldare la portata successiva, calcolato da quando la portata
+// precedente e' stata messa in finestra.
+const CHIAVI_PRE_RISCALDO = [
+  { chiave: 'pre_riscaldo_antipasto_min', label: '🥗 Antipasti — dopo questa portata, attendi N min prima del pre-riscaldo dei primi' },
+  { chiave: 'pre_riscaldo_primo_min',     label: '🍝 Primi — dopo questa portata, attendi N min prima del pre-riscaldo dei secondi' },
+  { chiave: 'pre_riscaldo_secondo_min',   label: '🥩 Secondi — dopo questa portata, attendi N min prima del pre-riscaldo dei contorni' },
+  { chiave: 'pre_riscaldo_contorno_min',  label: '🥗 Contorni — dopo questa portata, attendi N min prima del pre-riscaldo dei dolci' },
+  { chiave: 'pre_riscaldo_dolce_min',     label: '🍰 Dolci — buffer extra prima del servizio dolci/caffè/amari' },
+]
+
 const FASCE = [
   { id: 'colazione', label: '🌅 Colazione' },
   { id: 'pranzo',    label: '🌞 Pranzo'    },
@@ -1024,6 +1195,13 @@ function TabImpostazioni() {
             setValori={setValori}
             originali={originali}
             onSalva={() => salvaChiavi(CHIAVI_TIMER.map(c => c.chiave), 'impostazioni timer')}
+          />
+
+          <SezionePreRiscaldo
+            valori={valori}
+            setValori={setValori}
+            originali={originali}
+            onSalva={() => salvaChiavi(CHIAVI_PRE_RISCALDO.map(c => c.chiave), 'timer pre-riscaldo')}
           />
 
           <SezioneMessaggio
@@ -1154,6 +1332,44 @@ function SezioneTimer({ valori, setValori, originali, onSalva }) {
         className="btn-success w-full mt-4"
       >
         {cambiate.length === 0 ? 'Nessuna modifica' : `Salva timer (${cambiate.length})`}
+      </button>
+    </section>
+  )
+}
+
+// ------- Sezione TIMER PRE-RISCALDO CUCINA (v5) -------
+
+function SezionePreRiscaldo({ valori, setValori, originali, onSalva }) {
+  const cambiate = CHIAVI_PRE_RISCALDO.filter(
+    ({ chiave }) => String(valori[chiave] ?? '') !== String(originali[chiave] ?? '')
+  )
+  return (
+    <section className="card border-2 border-warning/40">
+      <h3 className="font-bold text-lg mb-1">⏱️ Timer pre-riscaldo cucina</h3>
+      <p className="text-xs opacity-70 mb-3">
+        Tempo dopo cui la cucina inizia a riscaldare la portata successiva,
+        calcolato da quando la portata precedente è stata messa in finestra.
+        Default: antipasto 10 · primo 15 · secondo 15 · contorno 12 · dolce 8.
+      </p>
+      <div className="space-y-2">
+        {CHIAVI_PRE_RISCALDO.map(({ chiave, label }) => (
+          <label key={chiave} className="block">
+            <span className="text-sm opacity-80">{label}</span>
+            <input
+              type="number" inputMode="numeric" min="0"
+              value={valori[chiave] ?? ''}
+              onChange={e => setValori(v => ({ ...v, [chiave]: e.target.value }))}
+              className="input-base mt-1 tabular-nums"
+            />
+          </label>
+        ))}
+      </div>
+      <button
+        onClick={onSalva}
+        disabled={cambiate.length === 0}
+        className="btn-success w-full mt-4"
+      >
+        {cambiate.length === 0 ? 'Nessuna modifica' : `Salva pre-riscaldo (${cambiate.length})`}
       </button>
     </section>
   )

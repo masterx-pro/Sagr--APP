@@ -1,40 +1,37 @@
-import { useEffect, useMemo, useState, useRef } from 'react'
+import { useEffect, useMemo, useState, useRef, useCallback } from 'react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import TableBadge from '../components/TableBadge.jsx'
 import RoleHeader, { HeaderExitBtn } from '../components/RoleHeader.jsx'
-import { getServizioAttuale } from '../utils/servizio.js'
+import { getServizioAttuale, getTimerPreRiscaldo } from '../utils/servizio.js'
 import {
   groupByMandata,
   getStatoMandataDisplay,
-  getMandataAttiva,
-  getMandataProntaAt,
-  timerMandataScaduto,
-  secondiRimanentiTimerMandata,
-  formatCountdownSec,
+  getPrioritaMandata,
+  pesoPriorita,
+  secondiRimanentiPreRiscaldo,
+  getPortataDominante,
 } from '../utils/mandateUtils.js'
+import { getSottocategoriaFromOrdine } from '../utils/servizio.js'
 
 /**
- * StationPage v5:
+ * StationPage v5 — Kitchen Display System.
  *
- * Filtraggio items per categoria:
- *   - CUCINA: categoria='cucina' AND mandata IN (1,2,3)   (M4 esclusa)
- *   - BAR:    categoria='bar' AND (mandata != 4 OR mandata_stato != 'in_attesa')
- *             OR (categoria='cucina' AND mandata=4 AND mandata_stato != 'in_attesa')
- *             → M4 (sia caffe'/amari bar sia dolci cucina) bloccata finche'
- *               il cameriere non preme "Invia M4".
+ * Flusso stati (per categoria):
+ *   in_attesa → pre_riscaldo → in_preparazione → in_finestra → consegnata
+ *   in_attesa → sbloccata    → in_preparazione → in_finestra → consegnata
  *
- * Blocco sequenziale CUCINA: M2 disponibile solo se M1='pronta'; M3 se M2='pronta'.
+ * Filtraggio items per categoria (visibilita' KDS):
+ *   - CUCINA: categoria='cucina' AND mandata IN (1,2,3,4)
+ *             (M4 visibile solo se mandata_stato != 'in_attesa', cioe' dopo
+ *              che il cameriere ha premuto "Sblocca M4")
+ *   - BAR:    categoria='bar' AND M1..M3 + M4 sbloccata
+ *             OR dolci cucina M4 sbloccati
  *
- * Pulsanti progressivi (cucina e bar):
- *   in_attesa       → [📋 Da preparare]     (in_preparazione)
- *   in_preparazione → [🔄 In preparazione]  (pronta)
- *   pronta          → [✅ Pronto]           (no click)
- *
- * Dopo "Pronto", il barista deve fare swipe sx/dx per rimuovere la card.
- * In cucina: i tavoli "completati" (tutte le mandate pronte/consegnate)
- * scendono in fondo con badge "✅ Completato" e si rimuovono via swipe.
+ * Polling pre-riscaldo (solo cucina): ogni 30s controlla items in_attesa
+ * di mandata N dove M(N-1) e' completamente in_finestra/consegnata e
+ * promuove a pre_riscaldo con pre_riscaldo_at = now() (gia' scaduto).
  */
 
 const PORTATE_CUCINA = [
@@ -64,14 +61,16 @@ function groupByPortata(items, schema) {
   return groups.filter(g => g.items.length > 0)
 }
 
-// Filtro items "miei" in base a categoria della stazione.
-// Regola M4: gli items in mandata 4 (caffe'/amari bar + dolci cucina)
-// restano nascosti finche' il cameriere non preme "Invia M4"
-// (mandata_stato passa da 'in_attesa' a 'in_preparazione').
+// Items "miei" per la stazione (esclude M4 in_attesa per cucina e bar).
 function itemsDellaStazione(orderItems, categoria) {
   const items = orderItems || []
   if (categoria === 'cucina') {
-    return items.filter(i => i.categoria === 'cucina' && (i.mandata ?? 1) < 4)
+    return items.filter(i => {
+      if (i.categoria !== 'cucina') return false
+      // M4 cucina (dolci) e' visibile solo se sbloccata dal cameriere
+      if (i.mandata === 4 && i.mandata_stato === 'in_attesa') return false
+      return true
+    })
   }
   // bar: voci bar tranne M4 in_attesa, piu' i dolci cucina M4 sbloccati.
   return items.filter(i => {
@@ -82,23 +81,23 @@ function itemsDellaStazione(orderItems, categoria) {
   })
 }
 
-const TICK_MS = 15_000
+const TICK_MS = 15_000           // tick per countdown UI
+const POLL_PRE_RISCALDO_MS = 30_000  // polling promozione pre_riscaldo
 
 export default function StationPage({ user, onLogout, categoria, titolo, role }) {
   const [orders, setOrders] = useState([])
   const { impostazioni } = useImpostazioni()
   const [view, setView] = useState('per-tavolo')
-  const { markMandataInPreparazione, markMandataReady } = useOrders()
+  const { markMandataInPreparazione, marcaInFinestra } = useOrders()
   const [refreshTick, setRefreshTick] = useState(0)
   const [servizioCorrente, setServizioCorrente] = useState(() => getServizioAttuale())
-  // Set di orderId che il barista/cuoco ha "dismissato" via swipe
   const [dismissedIds, setDismissedIds] = useState(() => new Set())
 
   const dismiss = (orderId) => setDismissedIds(s => {
     const n = new Set(s); n.add(orderId); return n
   })
 
-  const load = async () => {
+  const load = useCallback(async () => {
     const { data, error } = await supabase
       .from('orders')
       .select('id, numero_tavolo, n_persone, nome_cliente, created_at, note, servizio, stato, tipo_pagamento, order_items(*, menu_items(ordine))')
@@ -106,17 +105,16 @@ export default function StationPage({ user, onLogout, categoria, titolo, role })
       .eq('servizio', servizioCorrente)
       .order('created_at', { ascending: true })
     if (error) { console.error(error); return }
-    // Tengo solo ordini con almeno un item "mio"
     const filtrati = (data || []).filter(o => itemsDellaStazione(o.order_items, categoria).length > 0)
     setOrders(filtrati)
-  }
+  }, [categoria, servizioCorrente])
 
-  useEffect(() => { load() }, [refreshTick, categoria, servizioCorrente])
+  useEffect(() => { load() }, [load, refreshTick])
 
   useEffect(() => {
     const nuovo = getServizioAttuale(impostazioni)
     if (nuovo !== servizioCorrente) setServizioCorrente(nuovo)
-  }, [impostazioni])
+  }, [impostazioni, servizioCorrente])
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -126,10 +124,8 @@ export default function StationPage({ user, onLogout, categoria, titolo, role })
     return () => clearInterval(interval)
   }, [servizioCorrente, impostazioni])
 
+  // Realtime: refresh su qualunque mutazione order_items/orders del servizio.
   useEffect(() => {
-    // order_items: ascoltiamo solo UPDATE (cambio mandata_stato).
-    //   I nuovi item arrivano via INSERT su orders -> refetch.
-    // orders: filtrato per servizio corrente per ridurre il traffico.
     const channel = supabase
       .channel(`station-${categoria}-${servizioCorrente}`)
       .on('postgres_changes',
@@ -142,13 +138,83 @@ export default function StationPage({ user, onLogout, categoria, titolo, role })
     return () => { supabase.removeChannel(channel) }
   }, [categoria, servizioCorrente])
 
+  // Tick per countdown timer
   const [, setTick] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setTick(x => x + 1), TICK_MS)
     return () => clearInterval(t)
   }, [])
 
-  // Ordini "visibili" = non dismissati localmente
+  // POLLING PRE-RISCALDO (solo cucina)
+  // Ogni 30s: per ogni ordine, se M(N-1) e' tutta in_finestra/consegnata
+  // e M(N) e' ancora in_attesa, promuovi M(N) → pre_riscaldo (scaduto).
+  useEffect(() => {
+    if (categoria !== 'cucina') return
+    let active = true
+
+    async function poll() {
+      try {
+        const idsDaPromuovere = []
+        for (const order of orders) {
+          const myItems = itemsDellaStazione(order.order_items, categoria)
+          if (myItems.length === 0) continue
+          const groups = groupByMandata(myItems)
+          const numeri = Object.keys(groups).map(Number).sort((a, b) => a - b)
+          for (let i = 1; i < numeri.length; i++) {
+            const n = numeri[i]
+            const prev = numeri[i - 1]
+            const prevItems = groups[prev]
+            const prevPronta = prevItems.every(it =>
+              it.mandata_stato === 'in_finestra' || it.mandata_stato === 'consegnata'
+            )
+            if (!prevPronta) continue
+
+            // Timer: usa la portata dominante della M(N) per scegliere
+            // pre_riscaldo_X_min, e l'in_finestra_at piu' recente di M(N-1).
+            const prevFinestraAt = Math.max(...prevItems
+              .map(it => new Date(it.in_finestra_at || 0).getTime())
+              .filter(t => Number.isFinite(t) && t > 0)
+            )
+            if (!prevFinestraAt || !Number.isFinite(prevFinestraAt)) continue
+
+            const itemsConOrdine = (groups[n] || []).map(it => ({
+              categoria: 'cucina',
+              ordine: it.menu_items?.ordine ?? 0,
+            }))
+            const portata = getPortataDominante(itemsConOrdine, impostazioni) || 'primo'
+            const timerMin = getTimerPreRiscaldo(portata, impostazioni)
+            const scadenza = prevFinestraAt + timerMin * 60_000
+            if (Date.now() < scadenza) continue
+
+            for (const it of groups[n]) {
+              if (it.mandata_stato === 'in_attesa') {
+                idsDaPromuovere.push(it.id)
+              }
+            }
+          }
+        }
+
+        if (active && idsDaPromuovere.length > 0) {
+          await supabase
+            .from('order_items')
+            .update({
+              mandata_stato: 'pre_riscaldo',
+              pre_riscaldo_at: new Date().toISOString(),
+            })
+            .in('id', idsDaPromuovere)
+            .eq('mandata_stato', 'in_attesa')   // re-check
+          setRefreshTick(t => t + 1)
+        }
+      } catch (e) {
+        console.warn('polling pre_riscaldo error:', e?.message || e)
+      }
+    }
+
+    poll()
+    const t = setInterval(poll, POLL_PRE_RISCALDO_MS)
+    return () => { active = false; clearInterval(t) }
+  }, [categoria, orders, impostazioni])
+
   const ordersVisibili = useMemo(
     () => orders.filter(o => !dismissedIds.has(o.id)),
     [orders, dismissedIds]
@@ -196,12 +262,12 @@ export default function StationPage({ user, onLogout, categoria, titolo, role })
             orders={ordersVisibili}
             categoria={categoria}
             impostazioni={impostazioni}
-            onMandataInPreparazione={async (orderId, mandataNum) => {
+            onInPreparazione={async (orderId, mandataNum) => {
               try { await markMandataInPreparazione(orderId, mandataNum, categoria); setRefreshTick(t => t + 1) }
               catch (e) { alert('Errore: ' + (e.message || e)) }
             }}
-            onMandataPronta={async (orderId, mandataNum) => {
-              try { await markMandataReady(orderId, mandataNum, categoria); setRefreshTick(t => t + 1) }
+            onInFinestra={async (orderId, mandataNum) => {
+              try { await marcaInFinestra(orderId, mandataNum, categoria); setRefreshTick(t => t + 1) }
               catch (e) { alert('Errore: ' + (e.message || e)) }
             }}
             onDismiss={dismiss}
@@ -234,34 +300,55 @@ function TabBtn({ active, onClick, children }) {
 
 // -------------------- VISTA PER TAVOLO --------------------
 
-function VistaPerTavolo({ orders, categoria, impostazioni, onMandataInPreparazione, onMandataPronta, onDismiss }) {
-  // Ordina: attivi in cima (cronologico), completati in fondo
-  const { attivi, completati } = useMemo(() => {
-    const a = [], c = []
-    for (const o of orders) {
+function VistaPerTavolo({ orders, categoria, impostazioni, onInPreparazione, onInFinestra, onDismiss }) {
+  // Calcola priorita' max per ordine: serve a ordinare attivi → in fondo i completati.
+  const conPriorita = useMemo(() => {
+    return orders.map(o => {
       const myItems = itemsDellaStazione(o.order_items, categoria)
-      const tuttoFatto = myItems.length > 0 && myItems.every(i =>
-        i.mandata_stato === 'pronta' || i.mandata_stato === 'consegnata'
-      )
-      if (tuttoFatto) c.push(o); else a.push(o)
-    }
-    return { attivi: a, completati: c }
+      const groups = groupByMandata(myItems)
+      let pesoMax = 0
+      let attive = []
+      let inFinestra = []
+      let consegnate = []
+      for (const n of Object.keys(groups).map(Number).sort((a, b) => a - b)) {
+        const prio = getPrioritaMandata(groups[n])
+        const p = pesoPriorita(prio)
+        if (p > pesoMax) pesoMax = p
+        if (prio === 'consegnata') consegnate.push(n)
+        else if (prio === 'in_finestra') inFinestra.push(n)
+        else attive.push(n)
+      }
+      const tuttoFatto = attive.length === 0 && inFinestra.length === 0 && consegnate.length > 0
+      return { order: o, myItems, groups, pesoMax, attive, inFinestra, consegnate, tuttoFatto }
+    })
   }, [orders, categoria])
+
+  // Suddivisione: attivi (in cima ordinati per peso decrescente, poi ora) vs completati
+  const attivi = useMemo(
+    () => conPriorita
+      .filter(x => !x.tuttoFatto)
+      .sort((a, b) => (b.pesoMax - a.pesoMax) || (new Date(a.order.created_at) - new Date(b.order.created_at))),
+    [conPriorita]
+  )
+  const completati = useMemo(
+    () => conPriorita.filter(x => x.tuttoFatto),
+    [conPriorita]
+  )
 
   return (
     <>
       <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
                      mobile-landscape:grid-cols-2 gap-3">
-        {attivi.map(order => (
+        {attivi.map(x => (
           <StationCard
-            key={order.id}
-            order={order}
+            key={x.order.id}
+            entry={x}
             categoria={categoria}
             impostazioni={impostazioni}
             completato={false}
-            onInPreparazione={(m) => onMandataInPreparazione(order.id, m)}
-            onPronta={(m) => onMandataPronta(order.id, m)}
-            onDismiss={() => onDismiss(order.id)}
+            onInPreparazione={(m) => onInPreparazione(x.order.id, m)}
+            onInFinestra={(m) => onInFinestra(x.order.id, m)}
+            onDismiss={() => onDismiss(x.order.id)}
           />
         ))}
       </ul>
@@ -273,16 +360,16 @@ function VistaPerTavolo({ orders, categoria, impostazioni, onMandataInPreparazio
           </h2>
           <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
                          mobile-landscape:grid-cols-2 gap-3">
-            {completati.map(order => (
+            {completati.map(x => (
               <StationCard
-                key={order.id}
-                order={order}
+                key={x.order.id}
+                entry={x}
                 categoria={categoria}
                 impostazioni={impostazioni}
                 completato={true}
-                onInPreparazione={(m) => onMandataInPreparazione(order.id, m)}
-                onPronta={(m) => onMandataPronta(order.id, m)}
-                onDismiss={() => onDismiss(order.id)}
+                onInPreparazione={(m) => onInPreparazione(x.order.id, m)}
+                onInFinestra={(m) => onInFinestra(x.order.id, m)}
+                onDismiss={() => onDismiss(x.order.id)}
               />
             ))}
           </ul>
@@ -310,7 +397,6 @@ function useSwipeToDismiss(onDismiss, abilitato) {
   const onTouchEnd = () => {
     if (!abilitato || animatingOut) return
     if (Math.abs(dragX) > 80) {
-      // Vola fuori e dismiss
       setAnimatingOut(true)
       setDragX(dragX > 0 ? 600 : -600)
       setTimeout(() => onDismiss(), 220)
@@ -330,54 +416,12 @@ function useSwipeToDismiss(onDismiss, abilitato) {
   return { dragHandlers: { onTouchStart, onTouchMove, onTouchEnd }, style }
 }
 
-function StationCard({ order, categoria, impostazioni, completato, onInPreparazione, onPronta, onDismiss }) {
-  const myItems = itemsDellaStazione(order.order_items, categoria)
-  const groupsByMandata = groupByMandata(myItems)
-  const numeri = Object.keys(groupsByMandata).map(Number).sort((a, b) => a - b)
+function StationCard({ entry, categoria, impostazioni, completato, onInPreparazione, onInFinestra, onDismiss }) {
+  const { order, groups, attive, inFinestra, consegnate } = entry
   const stornato = order.stato === 'stornato'
 
-  // Le mandate sono ATTIVE (in_attesa/in_preparazione) o ARCHIVIATE (pronta/consegnata).
-  const { attive, archiviate } = useMemo(() => {
-    const a = [], ar = []
-    for (const n of numeri) {
-      const s = getStatoMandataDisplay(groupsByMandata[n])
-      if (s === 'pronta' || s === 'consegnata') ar.push(n); else a.push(n)
-    }
-    return { attive: a, archiviate: ar }
-  }, [numeri, groupsByMandata])
-
-  // Blocco sequenziale CUCINA: M2 disponibile se M1 archiviata, M3 se M2 archiviata.
-  // Per BAR il blocco non si applica: le mandate bar possono procedere in parallelo.
-  const mandataBloccata = (n) => {
-    if (categoria !== 'cucina') return false
-    if (n === 1) return false
-    const prec = n - 1
-    if (!numeri.includes(prec)) return false
-    const sPrec = getStatoMandataDisplay(groupsByMandata[prec])
-    return sPrec !== 'pronta' && sPrec !== 'consegnata'
-  }
-
-  // Timer per la mandata successiva (dopo che la precedente e' pronta)
-  const timerPerMandata = useMemo(() => {
-    const out = {}
-    for (const n of attive) {
-      const prec = [...numeri].reverse().find(x => x < n && getStatoMandataDisplay(groupsByMandata[x]) === 'pronta')
-      if (prec == null) continue
-      const proAt = getMandataProntaAt(groupsByMandata[prec])
-      if (!proAt) continue
-      out[n] = {
-        scaduto: timerMandataScaduto(proAt, impostazioni),
-        secondi: secondiRimanentiTimerMandata(proAt, impostazioni),
-      }
-    }
-    return out
-  }, [attive, numeri, groupsByMandata, impostazioni])
-
-  // Swipe disponibile se: bar+tutte pronte/consegnate, oppure cucina+completato
-  const swipeAbilitato = !stornato && (
-    (categoria === 'bar'    && attive.length === 0) ||
-    (categoria === 'cucina' && completato)
-  )
+  // Swipe disponibile se ordine completo o bar con nulla di attivo
+  const swipeAbilitato = !stornato && completato
   const { dragHandlers, style } = useSwipeToDismiss(onDismiss, swipeAbilitato)
 
   const cardBase = `relative overflow-hidden bg-surface border rounded-card-lg p-4 shadow-md
@@ -390,7 +434,6 @@ function StationCard({ order, categoria, impostazioni, completato, onInPreparazi
       style={style}
       {...dragHandlers}
     >
-      {/* Bottone X (desktop fallback per swipe) */}
       {swipeAbilitato && (
         <button
           onClick={onDismiss}
@@ -404,8 +447,7 @@ function StationCard({ order, categoria, impostazioni, completato, onInPreparazi
       )}
 
       {stornato && (
-        <div className="absolute top-3 left-3 right-3 z-10 pointer-events-none
-                        flex justify-center">
+        <div className="absolute top-3 left-3 right-3 z-10 pointer-events-none flex justify-center">
           <span className="pill bg-dangerSoft text-danger border border-danger animate-blink">
             ⚠ STORNATO · IN PAUSA · ATTENDI CASSA
           </span>
@@ -439,33 +481,68 @@ function StationCard({ order, categoria, impostazioni, completato, onInPreparazi
           </p>
         )}
 
-        <div className="space-y-3">
+        {/* 1. Mandate ATTIVE (sbloccata / pre_riscaldo / in_preparazione / in_attesa) */}
+        <div className="flex flex-col gap-2.5">
           {attive.map(n => (
-            <MandataBlock
+            <MandataBlockKDS
               key={n}
               numero={n}
-              items={groupsByMandata[n]}
+              items={groups[n]}
               categoria={categoria}
-              timer={timerPerMandata[n]}
-              bloccata={mandataBloccata(n)}
+              impostazioni={impostazioni}
               disabledByStorno={stornato}
               onInPreparazione={() => onInPreparazione(n)}
-              onPronta={() => onPronta(n)}
-            />
-          ))}
-          {archiviate.map(n => (
-            <MandataArchivedBlock
-              key={n}
-              numero={n}
-              items={groupsByMandata[n]}
-              categoria={categoria}
+              onInFinestra={() => onInFinestra(n)}
             />
           ))}
         </div>
+
+        {/* 2. Mandate IN FINESTRA (attendono cameriere) */}
+        {inFinestra.length > 0 && (
+          <div className="flex flex-col gap-2.5 mt-2.5">
+            {inFinestra.map(n => (
+              <MandataInFinestraBlock
+                key={n}
+                numero={n}
+                items={groups[n]}
+                categoria={categoria}
+              />
+            ))}
+          </div>
+        )}
+
+        {/* 3. Mandate CONSEGNATE (collassate) */}
+        {consegnate.length > 0 && (
+          <div className="mt-2.5">
+            <details className="bg-surface rounded-card border border-borderSoft px-3 py-2">
+              <summary className="text-[11px] uppercase tracking-[1.4px] font-extrabold text-textMute cursor-pointer">
+                ✅ {consegnate.length} mandat{consegnate.length === 1 ? 'a' : 'e'} consegnat{consegnate.length === 1 ? 'a' : 'e'}
+              </summary>
+              <ul className="mt-2 flex flex-col gap-1.5">
+                {consegnate.map(n => {
+                  const items = groups[n] || []
+                  const ora = items
+                    .map(it => it.mandata_consegnata_at)
+                    .filter(Boolean)
+                    .map(s => new Date(s))
+                    .sort((a, b) => b - a)[0]
+                  return (
+                    <li key={n} className="text-[12px] text-textMute font-semibold tabular-nums flex justify-between">
+                      <span>M{n} · {items.length} voci</span>
+                      <span>{ora ? ora.toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' }) : '—'}</span>
+                    </li>
+                  )
+                })}
+              </ul>
+            </details>
+          </div>
+        )}
       </div>
     </li>
   )
 }
+
+// -------------------- MANDATA BLOCK (KDS) --------------------
 
 function aggregaPerNome(items) {
   const map = new Map()
@@ -478,45 +555,68 @@ function aggregaPerNome(items) {
   return Array.from(map.values())
 }
 
-function MandataBlock({ numero, items, categoria, timer, bloccata, disabledByStorno, onInPreparazione, onPronta }) {
+function fmtCountdown(sec) {
+  if (sec == null) return ''
+  const abs = Math.abs(sec)
+  const m = Math.floor(abs / 60)
+  const s = abs % 60
+  return `${sec < 0 ? '-' : ''}${m}:${String(s).padStart(2, '0')}`
+}
+
+function MandataBlockKDS({ numero, items, categoria, impostazioni, disabledByStorno, onInPreparazione, onInFinestra }) {
+  const prio = getPrioritaMandata(items)
   const stato = getStatoMandataDisplay(items)
   const [busy, setBusy] = useState(false)
 
-  const urgente = !disabledByStorno && !bloccata && timer?.scaduto
-
-  // border + glow
-  let borderCls = 'border-border'
-  let glowCls = 'shadow-sm'
+  // Token visivi per stato
+  let borderCls = 'border-borderSoft'
   let bgCls = 'bg-surface'
-  if (bloccata) { borderCls = 'border-borderSoft'; bgCls = 'bg-[rgba(196,168,130,0.04)]' }
-  else if (urgente) { borderCls = 'border-danger'; glowCls = 'shadow-alert' }
-  else if (stato === 'in_preparazione') { borderCls = 'border-warning' }
-  else if (stato === 'in_attesa') { borderCls = 'border-borderSoft' }
-
-  const aggr = useMemo(() => aggregaPerNome(items), [items])
-
-  // Header status
-  let headerColor = 'text-textSoft'
-  let icon = '⏳'
-  let label = 'DA PREPARARE'
-  if (bloccata) {
-    headerColor = 'text-textMute'; icon = '🔒'
-    label = `IN ATTESA M${numero - 1}`
-  } else if (urgente) {
-    headerColor = 'text-danger'; icon = '🔴'; label = 'URGENTE'
-  } else if (timer?.secondi != null && timer.secondi > 0) {
-    headerColor = 'text-textSoft'; icon = '⏱'
-    label = `${formatCountdownSec(timer.secondi)} al via`
-  } else if (stato === 'in_preparazione') {
-    headerColor = 'text-warning'; icon = '🔄'; label = 'IN PREPARAZIONE'
+  let extraCls = ''
+  if (prio === 'urgente') {
+    borderCls = 'border-danger'; bgCls = 'bg-surface'; extraCls = 'animate-pulseUrgent shadow-alert'
+  } else if (prio === 'pre_riscaldo_scaduto') {
+    borderCls = 'border-danger'; bgCls = 'bg-dangerSoft/30'; extraCls = 'shadow-alert'
+  } else if (prio === 'pre_riscaldo') {
+    borderCls = 'border-warning'; bgCls = 'bg-warningSoft/30'
+  } else if (prio === 'in_preparazione') {
+    borderCls = 'border-warning'; bgCls = 'bg-warningSoft/20'
   }
 
+  // Label header
+  let headerIcon = '⬜'
+  let headerLabel = 'IN ATTESA'
+  let headerColor = 'text-textSoft'
+  if (prio === 'urgente')                 { headerIcon = '🔴'; headerLabel = 'URGENTE · SBLOCCATA'; headerColor = 'text-danger' }
+  else if (prio === 'pre_riscaldo_scaduto') { headerIcon = '⚠️'; headerLabel = 'PRE-RISCALDO SCADUTO'; headerColor = 'text-danger' }
+  else if (prio === 'pre_riscaldo')       { headerIcon = '🟡'; headerLabel = 'PRE-RISCALDO'; headerColor = 'text-warning' }
+  else if (prio === 'in_preparazione')    { headerIcon = '🔄'; headerLabel = 'IN PREPARAZIONE'; headerColor = 'text-warning' }
+
+  // Countdown pre_riscaldo (se applicabile, prendi il piu' urgente)
+  let countdownSec = null
+  if (prio === 'pre_riscaldo' || prio === 'pre_riscaldo_scaduto') {
+    const seconds = items
+      .map(it => secondiRimanentiPreRiscaldo(it))
+      .filter(s => s != null)
+    if (seconds.length > 0) countdownSec = Math.min(...seconds)
+  }
+
+  const aggr = useMemo(() => aggregaPerNome(items), [items])
   const sourceIcon = categoria === 'cucina' ? '🍳' : '🍺'
 
-  const handler = stato === 'in_attesa' ? onInPreparazione : onPronta
-  const btnLabel = stato === 'in_attesa' ? '→ In preparazione' : '→ Pronto'
-  const btnBg    = stato === 'in_attesa' ? 'bg-gold text-bg' : 'bg-success text-bg'
-  const showBtn  = !disabledByStorno && !bloccata
+  // CTA: dipende dallo stato corrente
+  let ctaLabel = null
+  let ctaHandler = null
+  let ctaCls = 'bg-gold text-bg'
+  if (stato === 'in_attesa' || stato === 'pre_riscaldo' || stato === 'sbloccata') {
+    ctaLabel = '→ In preparazione'
+    ctaHandler = onInPreparazione
+    ctaCls = 'bg-gold text-bg'
+  } else if (stato === 'in_preparazione') {
+    ctaLabel = categoria === 'cucina' ? '🪟 Metti in finestra' : '🪟 Pronto al banco'
+    ctaHandler = onInFinestra
+    ctaCls = 'bg-success text-bg'
+  }
+  const showCta = !disabledByStorno && ctaLabel != null
 
   const renderRiga = ({ nome, q }) => (
     <li key={nome}
@@ -531,8 +631,7 @@ function MandataBlock({ numero, items, categoria, timer, bloccata, disabledBySto
   )
 
   return (
-    <div className={`relative rounded-card p-3 border-[1.5px] ${borderCls} ${glowCls} ${bgCls}
-                     ${urgente ? 'animate-pulseUrgent' : ''}`}>
+    <div className={`relative rounded-card p-3 border-[1.5px] ${borderCls} ${bgCls} ${extraCls} shadow-sm`}>
       {/* Header */}
       <div className="flex items-center justify-between mb-2">
         <div className="flex items-center gap-2">
@@ -543,18 +642,23 @@ function MandataBlock({ numero, items, categoria, timer, bloccata, disabledBySto
           <div>
             <div className="text-[14px] font-extrabold tracking-[0.4px] text-text">
               MANDATA {numero}
-              {urgente && (
-                <span className="ml-1.5 text-danger text-[11px] font-extrabold animate-blink">⚡</span>
-              )}
             </div>
             <div className={`text-[11px] font-bold uppercase tracking-[0.4px] mt-[1px] ${headerColor}`}>
-              {icon} {label}
+              {headerIcon} {headerLabel}
             </div>
           </div>
         </div>
+        {countdownSec != null && (
+          <span className={`pill tabular-nums text-[12px]
+                            ${countdownSec < 0
+                              ? 'bg-dangerSoft text-danger border border-danger'
+                              : 'bg-surfaceElev text-textSoft border border-border'}`}>
+            ⏱ {fmtCountdown(countdownSec)}
+          </span>
+        )}
       </div>
 
-      <ul className={`flex flex-col gap-1.5 mb-2 ${bloccata ? 'opacity-55' : ''}`}>
+      <ul className="flex flex-col gap-1.5 mb-2">
         {categoria === 'cucina'
           ? groupByPortata(aggr, PORTATE_CUCINA).flatMap(g => [
               <li key={`hdr-${g.label}`}
@@ -566,37 +670,36 @@ function MandataBlock({ numero, items, categoria, timer, bloccata, disabledBySto
           : aggr.map(renderRiga)}
       </ul>
 
-      {showBtn && (
+      {showCta && (
         <button
           disabled={busy}
           onClick={async () => {
             setBusy(true)
-            try { await handler() } finally { setBusy(false) }
+            try { await ctaHandler() } finally { setBusy(false) }
           }}
-          className={`${btnBg} w-full min-h-[50px] rounded-btn py-2 font-extrabold text-[15px]
+          className={`${ctaCls} w-full min-h-[50px] rounded-btn py-2 font-extrabold text-[15px]
                      tracking-[0.4px] shadow-[0_3px_0_#3F2A1F]
                      active:scale-95 transition-transform
                      disabled:opacity-50 disabled:active:scale-100`}
         >
-          {busy ? 'Aggiornamento…' : btnLabel}
+          {busy ? 'Aggiornamento…' : ctaLabel}
         </button>
       )}
     </div>
   )
 }
 
-function MandataArchivedBlock({ numero, items }) {
-  const stato = getStatoMandataDisplay(items)
+function MandataInFinestraBlock({ numero, items, categoria }) {
   const aggr = useMemo(() => aggregaPerNome(items), [items])
-  const consegnata = stato === 'consegnata'
-  const bg = consegnata ? 'bg-[rgba(196,168,130,0.06)] border-textMute/40' : 'bg-successSoft border-success/40'
-  const ink = consegnata ? 'text-textMute' : 'text-success'
-  const icon = consegnata ? '✓ Consegnata' : '✅ Pronto'
-
   return (
-    <div className={`rounded-card p-3 border-[1.5px] ${bg} opacity-80`}>
-      <div className={`text-[11px] font-extrabold uppercase tracking-[0.4px] mb-1.5 ${ink}`}>
-        MANDATA {numero} · {icon}
+    <div className="relative rounded-card p-3 border-[1.5px] border-success bg-successSoft/30 shadow-sm">
+      <div className="flex items-center justify-between mb-1.5">
+        <div className="text-[11px] font-extrabold uppercase tracking-[1.4px] text-success">
+          🪟 M{numero} · IN FINESTRA
+        </div>
+        <div className="text-[10.5px] font-semibold text-textSoft uppercase tracking-wider">
+          attendi cameriere
+        </div>
       </div>
       <p className="text-[13px] text-text break-words">
         {aggr.map(a => `${a.nome} ×${a.q}`).join(' · ')}
@@ -607,51 +710,15 @@ function MandataArchivedBlock({ numero, items }) {
 
 // -------------------- VISTA AGGREGATA --------------------
 //
-// Mostra SOLO items che la stazione deve ancora preparare:
-// mandata_stato IN ('in_attesa', 'in_preparazione').
-// Escludi pronta, consegnata, in_pausa.
+// 3 sezioni per cucina (Da impiattare ora / Pre-riscaldo / In attesa).
+// 3 sezioni per bar    (Da servire ora   / In preparazione / In attesa).
+// Sempre escludi: in_finestra, consegnata, in_pausa.
 
 function VistaAggregata({ orders, categoria }) {
-  const aggregated = useMemo(() => {
-    const map = new Map()
-    for (const order of orders) {
-      if (order.stato === 'stornato') continue
-      const myItems = itemsDellaStazione(order.order_items, categoria)
+  const sezioni = useMemo(() => calcolaSezioniAggregate(orders, categoria), [orders, categoria])
 
-      for (const it of myItems) {
-        if (!['in_attesa', 'in_preparazione'].includes(it.mandata_stato)) continue
-        // Bar M4 visibile solo se sbloccata (in_preparazione)
-        if (categoria === 'bar' && it.mandata === 4 && it.mandata_stato === 'in_attesa') continue
-
-        const key = it.nome_item
-        if (!map.has(key)) {
-          map.set(key, {
-            nome_item: it.nome_item,
-            ordine: it.menu_items?.ordine ?? it.ordine ?? 99,
-            byTavolo: new Map(),
-          })
-        }
-        const entry = map.get(key)
-        const cur = entry.byTavolo.get(order.numero_tavolo) || 0
-        entry.byTavolo.set(order.numero_tavolo, cur + it.quantita)
-      }
-    }
-    return Array.from(map.values()).map(e => ({
-      nome_item: e.nome_item,
-      ordine: e.ordine,
-      total_qty: Array.from(e.byTavolo.values()).reduce((s, q) => s + q, 0),
-      byTavolo: Array.from(e.byTavolo.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([tavolo, qty]) => ({ tavolo, qty })),
-    }))
-  }, [orders, categoria])
-
-  const groups = useMemo(() => {
-    const schema = categoria === 'cucina' ? PORTATE_CUCINA : PORTATE_BAR
-    return groupByPortata(aggregated, schema)
-  }, [aggregated, categoria])
-
-  if (aggregated.length === 0) {
+  const totale = sezioni.reduce((s, sec) => s + sec.tot, 0)
+  if (totale === 0) {
     return (
       <div className="text-center py-12">
         <p className="font-display text-[24px] text-text mb-1">Nulla da preparare 🎉</p>
@@ -661,44 +728,235 @@ function VistaAggregata({ orders, categoria }) {
   }
 
   return (
-    <div className="space-y-6">
-      {groups.map(g => (
-        <section key={g.label}>
-          <h2 className="flex items-center gap-2 mb-3 text-[11px] font-extrabold uppercase
-                          tracking-[1.4px] text-textSoft select-none">
-            <span className="flex-1 h-px bg-divider" aria-hidden="true" />
-            <span>— {g.label} —</span>
-            <span className="flex-1 h-px bg-divider" aria-hidden="true" />
-          </h2>
-          <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
-                         mobile-landscape:grid-cols-2 gap-3">
-            {g.items
-              .sort((a, b) => (a.ordine - b.ordine) || a.nome_item.localeCompare(b.nome_item))
-              .map(p => (
-                <PietanzaCard key={p.nome_item} pietanza={p} />
-              ))}
-          </ul>
-        </section>
+    <div className="space-y-5">
+      {sezioni.map(sec => (
+        <AggregateSezione key={sec.key} sezione={sec} categoria={categoria} />
       ))}
     </div>
   )
 }
 
-function PietanzaCard({ pietanza }) {
+function calcolaSezioniAggregate(orders, categoria) {
+  // Stati target per sezione (cucina: pre_riscaldo + sbloccata + in_prep + in_attesa).
+  // Bar non ha pre_riscaldo: solo sbloccata + in_prep + in_attesa.
+  const isCucina = categoria === 'cucina'
+
+  // Aggrega per nome_item dentro ciascuna sezione (mantiene la lista tavoli).
+  const buckets = {
+    urgente:      new Map(),
+    preRiscaldo:  new Map(),
+    inPrep:       new Map(),
+    inAttesa:     new Map(),
+  }
+
+  for (const order of orders) {
+    if (order.stato === 'stornato') continue
+    const myItems = itemsDellaStazione(order.order_items, categoria)
+    for (const it of myItems) {
+      let bucket
+      if (it.mandata_stato === 'sbloccata') bucket = buckets.urgente
+      else if (isCucina && it.mandata_stato === 'pre_riscaldo') bucket = buckets.preRiscaldo
+      else if (it.mandata_stato === 'in_preparazione') bucket = buckets.inPrep
+      else if (it.mandata_stato === 'in_attesa') {
+        // Bar M4 in_attesa = ancora bloccata, gia' esclusa da itemsDellaStazione.
+        bucket = buckets.inAttesa
+      } else continue
+
+      const key = it.nome_item
+      if (!bucket.has(key)) {
+        bucket.set(key, {
+          nome_item: it.nome_item,
+          ordine: it.menu_items?.ordine ?? it.ordine ?? 99,
+          byTavolo: new Map(),
+          minPreRiscaldoAt: null,
+        })
+      }
+      const entry = bucket.get(key)
+      const cur = entry.byTavolo.get(order.numero_tavolo) || 0
+      entry.byTavolo.set(order.numero_tavolo, cur + it.quantita)
+      if (it.pre_riscaldo_at) {
+        const t = new Date(it.pre_riscaldo_at).getTime()
+        if (entry.minPreRiscaldoAt == null || t < entry.minPreRiscaldoAt) entry.minPreRiscaldoAt = t
+      }
+    }
+  }
+
+  const toItems = (map) => Array.from(map.values()).map(e => ({
+    nome_item: e.nome_item,
+    ordine: e.ordine,
+    total_qty: Array.from(e.byTavolo.values()).reduce((s, q) => s + q, 0),
+    byTavolo: Array.from(e.byTavolo.entries())
+      .sort((a, b) => a[0] - b[0])
+      .map(([tavolo, qty]) => ({ tavolo, qty })),
+    minPreRiscaldoAt: e.minPreRiscaldoAt,
+  }))
+
+  const sezioni = []
+  const urgenteItems = toItems(buckets.urgente)
+  sezioni.push({
+    key: 'urgente',
+    label: isCucina ? 'DA IMPIATTARE ORA' : 'DA SERVIRE ORA',
+    icon: '🔴',
+    tone: 'danger',
+    tot: urgenteItems.reduce((s, it) => s + it.total_qty, 0),
+    items: urgenteItems,
+    grouped: true,
+  })
+
+  if (isCucina) {
+    const prItems = toItems(buckets.preRiscaldo)
+      .sort((a, b) => (a.minPreRiscaldoAt ?? 0) - (b.minPreRiscaldoAt ?? 0))
+    sezioni.push({
+      key: 'pre_riscaldo',
+      label: 'PRE-RISCALDO',
+      icon: '🟡',
+      tone: 'warning',
+      tot: prItems.reduce((s, it) => s + it.total_qty, 0),
+      items: prItems,
+      grouped: true,
+    })
+  }
+
+  const inPrepItems = toItems(buckets.inPrep)
+  sezioni.push({
+    key: 'in_prep',
+    label: 'IN PREPARAZIONE',
+    icon: '🔄',
+    tone: 'warning',
+    tot: inPrepItems.reduce((s, it) => s + it.total_qty, 0),
+    items: inPrepItems,
+    grouped: true,
+  })
+
+  // "In attesa" mostriamo solo contatori per portata (cucina) o per categoria (bar)
+  const inAttesaItems = toItems(buckets.inAttesa)
+  sezioni.push({
+    key: 'in_attesa',
+    label: 'IN ATTESA',
+    icon: '⬜',
+    tone: 'textSoft',
+    tot: inAttesaItems.reduce((s, it) => s + it.total_qty, 0),
+    items: inAttesaItems,
+    grouped: false, // mostra solo conteggi
+  })
+
+  return sezioni
+}
+
+function AggregateSezione({ sezione, categoria }) {
+  if (sezione.tot === 0) return null
+
+  const headerToneCls = {
+    danger:   'bg-dangerSoft text-danger border-danger/40',
+    warning:  'bg-warningSoft text-warning border-warning/40',
+    success:  'bg-successSoft text-success border-success/40',
+    textSoft: 'bg-[rgba(196,168,130,0.10)] text-textSoft border-borderSoft',
+  }[sezione.tone] || 'bg-surfaceElev text-textSoft border-border'
+
+  return (
+    <section>
+      <div className={`flex items-center justify-between rounded-card px-3 py-2 mb-3
+                       border ${headerToneCls}
+                       ${sezione.key === 'urgente' ? 'animate-pulseUrgent' : ''}`}>
+        <div className="text-[12px] font-extrabold uppercase tracking-[1.4px]">
+          {sezione.icon} {sezione.label}
+        </div>
+        <div className="text-[14px] font-extrabold tabular-nums">
+          {sezione.tot} porzion{sezione.tot === 1 ? 'e' : 'i'}
+        </div>
+      </div>
+
+      {sezione.grouped ? (
+        // Dettaglio per piatto + tavoli coinvolti
+        <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {sezione.items
+            .sort((a, b) => (a.ordine - b.ordine) || a.nome_item.localeCompare(b.nome_item))
+            .map(p => (
+              <PietanzaCard key={p.nome_item} pietanza={p}
+                            urgent={sezione.key === 'urgente'}
+                            scadutaCheck={sezione.key === 'pre_riscaldo'} />
+            ))}
+        </ul>
+      ) : (
+        // Solo conteggi per categoria (in attesa)
+        <ContatoreCategorie items={sezione.items} categoria={categoria} />
+      )}
+    </section>
+  )
+}
+
+function PietanzaCard({ pietanza, urgent, scadutaCheck }) {
+  const scaduta = scadutaCheck && pietanza.minPreRiscaldoAt != null
+    && Date.now() > pietanza.minPreRiscaldoAt
+  const badgeCls = urgent || scaduta
+    ? 'bg-danger text-bg animate-pulseDot'
+    : 'bg-gold text-bg'
+
   return (
     <li className="bg-surface border border-borderSoft rounded-card p-3 shadow-sm">
       <div className="flex items-start justify-between gap-3 mb-2">
         <h3 className="text-[18px] font-extrabold text-text flex-1 min-w-0 break-words">
           {pietanza.nome_item}
         </h3>
-        <span className="bg-gold text-bg font-extrabold px-3 py-1 rounded-phone tabular-nums
-                         text-[13px] shrink-0 whitespace-nowrap shadow-cta">
-          TOT: {pietanza.total_qty}
+        <span className={`${badgeCls} font-extrabold px-3 py-1 rounded-phone tabular-nums
+                          text-[13px] shrink-0 whitespace-nowrap shadow-cta`}>
+          {urgent || scaduta ? '⚠️ ' : ''}{pietanza.total_qty}
         </span>
       </div>
       <p className="text-[12.5px] text-textSoft font-semibold break-words">
-        {pietanza.byTavolo.map(t => `Tav.${t.tavolo} ×${t.qty}`).join(' · ')}
+        {pietanza.byTavolo
+          .sort((a, b) => a.tavolo - b.tavolo)
+          .map(t => `Tav.${t.tavolo} ×${t.qty}`).join(' · ')}
       </p>
     </li>
+  )
+}
+
+function ContatoreCategorie({ items, categoria }) {
+  // Per cucina raggruppiamo per sottocategoria (antipasti/primi/secondi/contorni/dolci).
+  // Per bar usiamo le fasce PORTATE_BAR.
+  if (items.length === 0) return null
+
+  let etichette = []
+  if (categoria === 'cucina') {
+    const map = new Map([
+      ['Antipasti', 0], ['Primi', 0], ['Secondi', 0], ['Contorni', 0], ['Dolci', 0],
+    ])
+    for (const it of items) {
+      const sotto = getSottocategoriaFromOrdine(it.ordine)
+      const key = ({
+        antipasto: 'Antipasti',
+        primo:     'Primi',
+        secondo:   'Secondi',
+        contorno:  'Contorni',
+        dolce:     'Dolci',
+      })[sotto] || null
+      if (key) map.set(key, (map.get(key) || 0) + it.total_qty)
+    }
+    etichette = Array.from(map.entries())
+      .filter(([, q]) => q > 0)
+      .map(([k, q]) => ({ label: k, qty: q }))
+  } else {
+    const map = new Map()
+    for (const it of items) {
+      const portata = PORTATE_BAR.find(p => p.test(it.ordine))?.label || 'Altro'
+      map.set(portata, (map.get(portata) || 0) + it.total_qty)
+    }
+    etichette = Array.from(map.entries()).map(([k, q]) => ({ label: k, qty: q }))
+  }
+
+  return (
+    <ul className="flex flex-wrap gap-2">
+      {etichette.map(e => (
+        <li key={e.label}
+            className="inline-flex items-center gap-2 px-3 py-2 rounded-card
+                       bg-surface border border-borderSoft shadow-sm">
+          <span className="text-[12.5px] font-extrabold uppercase tracking-[0.6px] text-textSoft">
+            {e.label}
+          </span>
+          <span className="text-[15px] font-extrabold tabular-nums text-text">{e.qty}</span>
+        </li>
+      ))}
+    </ul>
   )
 }

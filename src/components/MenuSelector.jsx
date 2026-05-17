@@ -1,4 +1,5 @@
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { supabase } from '../supabaseClient.js'
 
 /**
  * MenuSelector v5: mandate libere.
@@ -81,10 +82,46 @@ export default function MenuSelector({
   const [mandataAttiva, setMandataAttiva] = useState(mandateAbilitate[0] ?? 1)
   const [tab, setTab] = useState('cucina')
 
-  const itemsAttivi = useMemo(
-    () => (items || []).filter(i => i.attivo !== false),
-    [items]
-  )
+  // Stock realtime: ascolta UPDATE su menu_items per aggiornare i badge
+  // "N rimaste" senza ricaricare il menu. Mantiene una mappa locale
+  // override { itemId: porzioni_disponibili } che ha priorita' sui prop.
+  const [stockOverride, setStockOverride] = useState({})
+  useEffect(() => {
+    const ch = supabase
+      .channel('menu-items-stock')
+      .on('postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'menu_items' },
+        (payload) => {
+          const r = payload?.new
+          if (!r?.id) return
+          setStockOverride(s => ({
+            ...s,
+            [r.id]: {
+              porzioni_disponibili: r.porzioni_disponibili,
+              soglia_alert: r.soglia_alert,
+              traccia_magazzino: r.traccia_magazzino,
+            },
+          }))
+        })
+      .subscribe()
+    return () => { supabase.removeChannel(ch) }
+  }, [])
+
+  // Items mescolando i valori prop con l'override realtime
+  const itemsAttivi = useMemo(() => {
+    return (items || [])
+      .filter(i => i.attivo !== false)
+      .map(i => {
+        const ov = stockOverride[i.id]
+        if (!ov) return i
+        return {
+          ...i,
+          porzioni_disponibili: ov.porzioni_disponibili,
+          soglia_alert: ov.soglia_alert ?? i.soglia_alert,
+          traccia_magazzino: ov.traccia_magazzino,
+        }
+      })
+  }, [items, stockOverride])
 
   const itemsCategoria = useMemo(
     () => itemsAttivi
@@ -202,51 +239,85 @@ export default function MenuSelector({
   )
 }
 
+// Calcola info magazzino: { esaurito, alertCls, label } o null se non tracciato.
+function stockInfo(item, qNow, qTotale) {
+  if (!item?.traccia_magazzino) return null
+  const disp = Number(item.porzioni_disponibili ?? 0)
+  const soglia = Number(item.soglia_alert ?? 0)
+  // Quanti pezzi sono GIA' nel carrello: il calcolo "esaurito" tiene conto
+  // della quantita' che sto per ordinare, non solo del DB.
+  const inCarrello = Number(qTotale || 0)
+  const restanti = Math.max(0, disp - inCarrello)
+  if (disp === 0) {
+    return { esaurito: true, restanti: 0, alertCls: 'bg-danger text-bg', label: 'ESAURITO' }
+  }
+  if (disp <= Math.max(1, Math.floor(soglia / 2))) {
+    return { esaurito: false, restanti, alertCls: 'bg-dangerSoft text-danger border border-danger/40',
+             label: `🔴 ${restanti} rimaste` }
+  }
+  if (disp <= soglia) {
+    return { esaurito: false, restanti, alertCls: 'bg-warningSoft text-warning border border-warning/40',
+             label: `⚠️ ${restanti} rimaste` }
+  }
+  return null
+}
+
 function renderItemRow({ item, quantities, setQty, mandataAttiva }) {
   const qNow = qtyOf(quantities, item.id, mandataAttiva)
   const qTotale = totalQtyOf(quantities, item.id)
   // E' "in altre mandate" se ha quantita' > 0 ma NON nella mandata corrente
   const inAltreMandate = qNow === 0 && qTotale > 0
   // Sfondo grigio se compare in altre mandate; sfondo normale altrimenti
-  const cardClass = inAltreMandate ? 'bg-gray-800/40' : ''
+  const cardClass = inAltreMandate ? 'bg-surfaceElev/60' : ''
+
+  const stock = stockInfo(item, qNow, qTotale)
+  const esaurito = stock?.esaurito && qNow === 0
+  // Disabilita "+" anche se aggiungere supererebbe le porzioni disponibili
+  const plusDisabled = stock?.esaurito || (stock && stock.restanti <= 0)
 
   return (
-    <li key={item.id} className={`card flex items-start gap-3 ${cardClass}`}>
+    <li key={item.id} className={`card flex items-start gap-3 ${cardClass} ${esaurito ? 'opacity-60' : ''}`}>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2 flex-wrap">
           <p className="font-semibold break-words whitespace-normal">{item.nome}</p>
+          {stock && (
+            <span className={`pill text-[10.5px] tabular-nums ${stock.alertCls}`}>
+              {stock.label}
+            </span>
+          )}
           {qNow > 0 && (
             <span className="text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wide
-                             bg-cameriere/40 border border-cameriere">
+                             bg-wineSoft border border-wine/40">
               M{mandataAttiva}
             </span>
           )}
           {inAltreMandate && (
             <span className="text-[10px] px-2 py-0.5 rounded-full uppercase tracking-wide
-                             bg-gray-700 border border-gray-500 opacity-80"
-                  title="Gia' selezionato in altre mandate">
+                             bg-surfaceElev border border-borderSoft text-textSoft opacity-80"
+                  title="Già selezionato in altre mandate">
               anche in altre M
             </span>
           )}
         </div>
-        <p className="text-sm opacity-80">€ {Number(item.prezzo).toFixed(2)}</p>
+        <p className="text-sm text-textSoft">€ {Number(item.prezzo).toFixed(2)}</p>
       </div>
       <div className="flex items-center gap-2 shrink-0">
         <button
           type="button"
           onClick={() => setQty(item, -1)}
           disabled={qNow === 0}
-          className="w-11 h-11 rounded-xl bg-red-700 font-bold text-xl
+          className="w-11 h-11 rounded-xl bg-danger font-bold text-xl text-text
                      active:scale-95 transition-transform disabled:opacity-30"
         >
           −
         </button>
-        <span className="w-8 text-center text-lg font-bold">{qNow}</span>
+        <span className="w-8 text-center text-lg font-bold tabular-nums">{qNow}</span>
         <button
           type="button"
           onClick={() => setQty(item, +1)}
-          className="w-11 h-11 rounded-xl bg-green-700 font-bold text-xl
-                     active:scale-95 transition-transform"
+          disabled={plusDisabled}
+          className="w-11 h-11 rounded-xl bg-success font-bold text-xl text-text
+                     active:scale-95 transition-transform disabled:opacity-30"
         >
           +
         </button>

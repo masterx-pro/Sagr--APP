@@ -1,15 +1,20 @@
 /**
- * MandataIndicator — micro-pill per riga indicators in OrderCard.
+ * MandataIndicator v5 — micro-pill per riga indicators in OrderCard.
  *  - source: 'cucina' | 'bar'  → icon 🍳 / 🍺
  *  - mandata: numero mandata (1-4)
- *  - stato: 'in_attesa' | 'in_preparazione' | 'pronto' | 'consegnata' | 'bloccata'
+ *  - stato: 'in_attesa' | 'pre_riscaldo' | 'sbloccata' | 'in_preparazione'
+ *           | 'in_finestra' | 'consegnata' | 'bloccata' (alias legacy)
+ *           | 'in_pausa' (storno)
  */
 
 const STATE_STYLE = {
-  consegnata:      { icon: '✓', bgClass: 'bg-successSoft text-success' },
-  pronto:          { icon: '●', bgClass: 'bg-successSoft text-success animate-pulseDot' },
-  in_preparazione: { icon: '◐', bgClass: 'bg-warningSoft text-warning' },
-  in_attesa:       { icon: '○', bgClass: 'bg-[rgba(196,168,130,0.14)] text-textSoft' },
+  consegnata:      { icon: '✓', bgClass: 'bg-[rgba(196,168,130,0.10)] text-textMute' },
+  in_finestra:     { icon: '🪟', bgClass: 'bg-successSoft text-success animate-pulseDot' },
+  in_preparazione: { icon: '🔄', bgClass: 'bg-warningSoft text-warning' },
+  sbloccata:       { icon: '🔴', bgClass: 'bg-dangerSoft text-danger animate-blink' },
+  pre_riscaldo:    { icon: '🟡', bgClass: 'bg-warningSoft text-warning' },
+  in_attesa:       { icon: '⬜', bgClass: 'bg-[rgba(196,168,130,0.10)] text-textSoft' },
+  in_pausa:        { icon: '⏸', bgClass: 'bg-dangerSoft text-danger' },
   bloccata:        { icon: '🔒', bgClass: 'bg-[rgba(255,255,255,0.04)] text-textMute' },
 }
 

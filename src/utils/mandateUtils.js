@@ -6,6 +6,7 @@ import {
   getTempoConsumoPortata,
   getTimerMandata,
   getTimerMandateMinuti,
+  getTimerPreRiscaldo,
 } from './servizio.js'
 
 // -------------------------------------------------------------
@@ -35,21 +36,123 @@ export function getNumeriMandata(orderItems) {
 // Stato mandata
 // -------------------------------------------------------------
 
-// Stato display di una mandata (gruppo di items).
-// Regole di priorita' (dall'alto verso il basso):
+// Stato display di una mandata (gruppo di items), versione v5.
+// Stati possibili (sui singoli items):
+//   in_attesa | pre_riscaldo | sbloccata | in_preparazione | in_finestra |
+//   consegnata | in_pausa
+//
+// Regole di priorita' display (dall'alto verso il basso):
 //   - almeno un item in_pausa            -> 'in_pausa'
 //   - tutti gli item consegnati          -> 'consegnata'
-//   - tutti pronti o consegnati          -> 'pronta'
+//   - tutti in finestra o consegnati     -> 'in_finestra'
 //   - almeno uno in_preparazione         -> 'in_preparazione'
+//   - almeno uno sbloccata               -> 'sbloccata'  (urgente)
+//   - almeno uno pre_riscaldo            -> 'pre_riscaldo'
 //   - altrimenti                         -> 'in_attesa'
 export function getStatoMandataDisplay(mandataItems) {
   const items = mandataItems || []
   if (items.length === 0) return 'in_attesa'
   if (items.some(i => i.mandata_stato === 'in_pausa')) return 'in_pausa'
   if (items.every(i => i.mandata_stato === 'consegnata')) return 'consegnata'
-  if (items.every(i => i.mandata_stato === 'pronta' || i.mandata_stato === 'consegnata')) return 'pronta'
+  if (items.every(i => i.mandata_stato === 'in_finestra' || i.mandata_stato === 'consegnata')) return 'in_finestra'
   if (items.some(i => i.mandata_stato === 'in_preparazione')) return 'in_preparazione'
+  if (items.some(i => i.mandata_stato === 'sbloccata')) return 'sbloccata'
+  if (items.some(i => i.mandata_stato === 'pre_riscaldo')) return 'pre_riscaldo'
   return 'in_attesa'
+}
+
+// Tabella di lookup display per i nuovi stati v5. Le `color` sono nomi
+// dei token Tailwind (text-<color>, bg-<color>Soft, border-<color>); la
+// UI le compone alla bisogna. `priority` = ordinamento decrescente
+// di urgenza (piu' alto = piu' urgente in cima alla lista cucina/bar).
+export const STATO_MANDATA_META = {
+  in_attesa:       { label: 'In attesa',       color: 'textMute', icon: '⬜', priority: 1 },
+  pre_riscaldo:    { label: 'Pre-riscaldo',    color: 'warning',  icon: '🟡', priority: 3 },
+  sbloccata:       { label: 'Urgente',         color: 'danger',   icon: '🔴', priority: 5 },
+  in_preparazione: { label: 'In preparazione', color: 'warning',  icon: '🔄', priority: 4 },
+  in_finestra:     { label: 'In finestra',     color: 'success',  icon: '🪟', priority: 6 },
+  consegnata:      { label: 'Consegnata',      color: 'textMute', icon: '✅', priority: 0 },
+  in_pausa:        { label: 'In pausa',        color: 'danger',   icon: '⏸',  priority: 7 },
+}
+
+export function metaStatoMandata(stato) {
+  return STATO_MANDATA_META[stato] || STATO_MANDATA_META.in_attesa
+}
+
+// Priorita' di una singola mandata (gruppo items) per ordinamento KDS.
+// Restituisce una delle chiavi sotto, con `urgente` la piu' alta:
+//   'in_pausa'              → ordine stornato
+//   'urgente'               → almeno 1 item 'sbloccata'
+//   'pre_riscaldo_scaduto'  → tutti in 'pre_riscaldo' e timer scaduto
+//   'pre_riscaldo'          → almeno 1 in 'pre_riscaldo' (non scaduto)
+//   'in_preparazione'       → almeno 1 in 'in_preparazione'
+//   'in_finestra'           → tutti in 'in_finestra'/'consegnata'
+//   'consegnata'            → tutti consegnati
+//   'in_attesa'             → resto
+export function getPrioritaMandata(mandataItems) {
+  const items = mandataItems || []
+  if (items.length === 0) return 'in_attesa'
+  if (items.some(i => i.mandata_stato === 'in_pausa')) return 'in_pausa'
+  if (items.some(i => i.mandata_stato === 'sbloccata')) return 'urgente'
+
+  const tuttiPreRiscaldo = items.every(i => i.mandata_stato === 'pre_riscaldo')
+  const algunPreRiscaldo = items.some(i => i.mandata_stato === 'pre_riscaldo')
+  if (tuttiPreRiscaldo) {
+    const now = Date.now()
+    const scaduti = items.every(i => {
+      if (!i.pre_riscaldo_at) return true
+      const t = new Date(i.pre_riscaldo_at).getTime()
+      return Number.isFinite(t) && now > t
+    })
+    return scaduti ? 'pre_riscaldo_scaduto' : 'pre_riscaldo'
+  }
+
+  if (items.some(i => i.mandata_stato === 'in_preparazione')) return 'in_preparazione'
+  if (items.every(i => i.mandata_stato === 'consegnata')) return 'consegnata'
+  if (items.every(i => i.mandata_stato === 'in_finestra' || i.mandata_stato === 'consegnata')) return 'in_finestra'
+  if (algunPreRiscaldo) {
+    // mix di in_attesa + pre_riscaldo: gestiscilo come pre_riscaldo
+    return 'pre_riscaldo'
+  }
+  return 'in_attesa'
+}
+
+// Peso numerico per ordinare card di tavoli/mandate (piu' alto = piu' urgente).
+// L'ordine usato in cucina/bar: urgente > scaduto > pre_riscaldo > in_prep > in_attesa > in_finestra > consegnata > in_pausa
+export const PRIORITA_PESO = {
+  urgente:              60,
+  pre_riscaldo_scaduto: 55,
+  pre_riscaldo:         50,
+  in_preparazione:      40,
+  in_attesa:            30,
+  in_finestra:          20,
+  consegnata:           10,
+  in_pausa:              5,
+}
+export function pesoPriorita(prio) {
+  return PRIORITA_PESO[prio] ?? 0
+}
+
+// Restituisce solo gli items in 'pre_riscaldo' che hanno il timer scaduto
+// (now > pre_riscaldo_at). Utility pure, niente Supabase.
+export function checkPreRiscaldoScaduto(orderItems) {
+  const now = Date.now()
+  return (orderItems || []).filter(it => {
+    if (it.mandata_stato !== 'pre_riscaldo') return false
+    if (!it.pre_riscaldo_at) return false
+    const t = new Date(it.pre_riscaldo_at).getTime()
+    return Number.isFinite(t) && now > t
+  })
+}
+
+// Secondi rimanenti al pre_riscaldo_at (puo' essere negativo se scaduto).
+// null se l'item non e' in pre_riscaldo o manca il timestamp.
+export function secondiRimanentiPreRiscaldo(item) {
+  if (!item || item.mandata_stato !== 'pre_riscaldo') return null
+  if (!item.pre_riscaldo_at) return null
+  const t = new Date(item.pre_riscaldo_at).getTime()
+  if (!Number.isFinite(t)) return null
+  return Math.floor((t - Date.now()) / 1000)
 }
 
 // Numero della mandata "attiva" = la piu' bassa che contiene ancora
