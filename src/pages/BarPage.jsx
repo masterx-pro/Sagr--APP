@@ -12,8 +12,8 @@ export default function BarPage({ user, onLogout }) {
       user={user}
       onLogout={onLogout}
       categoria="bar"
-      titolo="Bar"
-      coloreHeader="bg-bar"
+      role="bar"
+      titolo="Bar live"
     />
   )
 }

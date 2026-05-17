@@ -1,42 +1,45 @@
 import { useEffect, useState } from 'react'
-import { getFasciaOrariaAttuale, fasciaLabel } from '../utils/servizio.js'
+import { getFasciaOrariaAttuale } from '../utils/servizio.js'
 
-const COLORI_FASCIA = {
-  colazione: 'bg-orange-300/30 text-orange-100 border border-orange-400/40',
-  pranzo:    'bg-yellow-500/30 text-yellow-50 border border-yellow-400/40',
-  aperitivo: 'bg-pink-500/30 text-pink-50 border border-pink-400/40',
-  cena:      'bg-blue-700/40 text-blue-50 border border-blue-400/40',
+// Token tabella SERVIZI (vedi README handoff)
+const SERVIZI = {
+  colazione: { label: 'COLAZIONE', icon: '🌅', bg: 'rgba(240,168,32,0.18)',  fg: '#F0A820', ring: 'rgba(240,168,32,0.40)' },
+  pranzo:    { label: 'PRANZO',    icon: '🌞', bg: 'rgba(212,160,67,0.18)',  fg: '#D4A043', ring: 'rgba(212,160,67,0.40)' },
+  aperitivo: { label: 'APERITIVO', icon: '🥂', bg: 'rgba(200,120,170,0.18)', fg: '#E89AC4', ring: 'rgba(200,120,170,0.40)' },
+  cena:      { label: 'CENA',      icon: '🌙', bg: 'rgba(100,140,210,0.18)', fg: '#8FB4E8', ring: 'rgba(100,140,210,0.40)' },
+  pausa:     { label: 'PAUSA',     icon: '⏸',  bg: 'rgba(196,168,130,0.14)', fg: '#C4A882', ring: 'rgba(196,168,130,0.30)' },
 }
 
-const PAUSA_CLS = 'bg-gray-700/40 text-gray-300 border border-gray-500/40'
-
 /**
- * Badge fascia oraria.
- *   - Accetta `impostazioni` come prop (mappa {chiave: valore} dalle
- *     righe di tabella `impostazioni`). Se mancante, usa i default
- *     hardcoded in servizio.js.
- *   - Si aggiorna da solo ogni minuto per ricalcolare la fascia
- *     senza richiedere un re-render del parent.
- *   - Se nessuna fascia e' attiva nell'ora corrente -> "⏸️ PAUSA".
+ * Badge fascia oraria attiva.
+ *  - `impostazioni` opzionale: deriva fascia da getFasciaOrariaAttuale.
+ *  - `servizio` opzionale: forza una fascia specifica (override).
+ *  - `size`: 'sm' | 'lg'
  */
-export default function ServizioBadge({ impostazioni, className = '' }) {
-  // Tick interno per aggiornare il badge al passaggio di fascia
+export default function ServizioBadge({ impostazioni, servizio, size = 'sm', className = '' }) {
   const [, setTick] = useState(0)
   useEffect(() => {
     const t = setInterval(() => setTick(x => x + 1), 60_000)
     return () => clearInterval(t)
   }, [])
 
-  const fascia = getFasciaOrariaAttuale(impostazioni)
-  const label = fasciaLabel(fascia)
-  const cls = fascia ? COLORI_FASCIA[fascia] : PAUSA_CLS
+  const fascia = servizio || getFasciaOrariaAttuale(impostazioni) || 'pausa'
+  const s = SERVIZI[fascia] || SERVIZI.pausa
+  const lg = size === 'lg'
 
   return (
     <span
-      className={`text-xs font-bold px-2 py-1 rounded-full whitespace-nowrap
-                  ${cls} ${className}`}
+      className={`inline-flex items-center gap-1.5 rounded-phone font-extrabold uppercase
+                  ${lg ? 'text-[13px] py-[7px] pl-[10px] pr-3' : 'text-[11px] py-1 pl-[7px] pr-[9px]'}
+                  tracking-[0.6px] ${className}`}
+      style={{
+        background: s.bg,
+        color: s.fg,
+        border: `1px solid ${s.ring}`,
+      }}
     >
-      {label}
+      <span className={lg ? 'text-[15px]' : 'text-[13px]'}>{s.icon}</span>
+      {s.label}
     </span>
   )
 }

@@ -12,8 +12,8 @@ export default function CucinaPage({ user, onLogout }) {
       user={user}
       onLogout={onLogout}
       categoria="cucina"
-      titolo="Cucina"
-      coloreHeader="bg-cucina"
+      role="cucina"
+      titolo="Cucina live"
     />
   )
 }

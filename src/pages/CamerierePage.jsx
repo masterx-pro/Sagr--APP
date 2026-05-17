@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Bell, BellOff, ChevronLeft, Plus, CreditCard, Banknote, RefreshCw, Search } from 'lucide-react'
 import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import MenuSelector, { flattenQuantities } from '../components/MenuSelector.jsx'
 import TableBadge from '../components/TableBadge.jsx'
-import ServizioBadge from '../components/ServizioBadge.jsx'
+import RoleHeader, { HeaderIconBtn, HeaderExitBtn } from '../components/RoleHeader.jsx'
+import MandataIndicator from '../components/MandataIndicator.jsx'
 import { getServizioAttuale } from '../utils/servizio.js'
 import {
   groupByMandata,
@@ -224,29 +226,63 @@ export default function CamerierePage({ user, onLogout }) {
         }
         setView('list'); setSelectedId(null); setDraft(null); setIsRiordino(false)
       }}
-      className="px-3 py-1 rounded-lg bg-white/20 text-sm font-semibold"
+      className="inline-flex items-center justify-center w-10 h-10 rounded-[14px]
+                 bg-white/15 text-text active:scale-95 transition-transform"
+      aria-label="Indietro"
     >
-      ← Indietro
+      <ChevronLeft size={22} />
     </button>
   )
 
+  // Conta gli ordini con almeno una mandata pronta da portare (per badge campana)
+  const readyCount = useMemo(() => {
+    let n = 0
+    for (const o of orders) {
+      if (o.stato === 'stornato' || o.stato === 'attesa_cassa') continue
+      const items = o.order_items || []
+      if (items.some(i => i.mandata_stato === 'pronta')) n++
+    }
+    return n
+  }, [orders])
+
+  const titleMap = {
+    list:     'Mappa tavoli',
+    new:      'Nuovo ordine',
+    riordino: 'Riordino rapido',
+    payment:  'Pagamento',
+    detail:   'Dettaglio',
+  }
+  const subtitleMap = {
+    list: `Ciao, ${user.nome}`,
+  }
+
   return (
-    <div className="min-h-screen flex flex-col">
-      <Header
-        color="bg-cameriere"
-        nome={user.nome}
-        ruolo="Cameriere"
-        onLogout={onLogout}
+    <div className="min-h-screen flex flex-col bg-bg text-text">
+      <RoleHeader
+        role="cameriere"
+        title={titleMap[view] || 'Cameriere'}
+        subtitle={subtitleMap[view]}
         impostazioni={impostazioni}
-        soundEnabled={soundEnabled}
-        onToggleSound={() => {
-          if (!soundEnabled) {
-            const ctx = getAudioCtx()
-            if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {})
-          }
-          setSoundEnabled(s => !s)
-        }}
         leftAction={onLeftAction}
+        right={
+          <>
+            <HeaderIconBtn
+              onClick={() => {
+                if (!soundEnabled) {
+                  const ctx = getAudioCtx()
+                  if (ctx && ctx.state === 'suspended') ctx.resume().catch(() => {})
+                }
+                setSoundEnabled(s => !s)
+              }}
+              ariaLabel={soundEnabled ? 'Disattiva suono' : 'Attiva suono'}
+              title={soundEnabled ? 'Disattiva suono' : 'Attiva suono'}
+              badge={view === 'list' && readyCount > 0 ? readyCount : null}
+            >
+              {soundEnabled ? <Bell size={20} /> : <BellOff size={20} />}
+            </HeaderIconBtn>
+            <HeaderExitBtn onClick={onLogout} />
+          </>
+        }
       />
 
       <main className="flex-1 p-4">
@@ -365,45 +401,11 @@ export default function CamerierePage({ user, onLogout }) {
   )
 }
 
-// -------------------- Header --------------------
-
-function Header({ color, nome, ruolo, onLogout, leftAction, soundEnabled, onToggleSound, impostazioni }) {
-  return (
-    <header className={`${color} px-4 py-3 flex items-center justify-between gap-2
-                        sticky top-0 z-30 mobile-landscape:py-2`}>
-      <div className="flex items-center gap-2 min-w-0">
-        {leftAction}
-        <div className="min-w-0">
-          <p className="font-bold truncate">{nome}</p>
-          <p className="text-xs opacity-90 mobile-landscape:hidden">{ruolo}</p>
-        </div>
-      </div>
-      <div className="flex items-center gap-2">
-        <ServizioBadge impostazioni={impostazioni} />
-        {onToggleSound && (
-          <button
-            onClick={onToggleSound}
-            aria-label={soundEnabled ? 'Disattiva suono' : 'Attiva suono'}
-            title={soundEnabled ? 'Disattiva suono' : 'Attiva suono'}
-            className="px-3 py-2 rounded-lg bg-white/20 text-base"
-          >
-            {soundEnabled ? '🔔' : '🔕'}
-          </button>
-        )}
-        <button
-          onClick={onLogout}
-          className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
-        >
-          Esci
-        </button>
-      </div>
-    </header>
-  )
-}
-
 // -------------------- LISTA TAVOLI --------------------
 
 function ListaTavoli({ orders, onNew, onSelect, onRiordino }) {
+  const [filtro, setFiltro] = useState('tutti') // 'tutti' | 'pronti' | 'attivi' | 'cassa'
+
   const pronti  = []
   const attivi  = []
   const inCassa = []
@@ -417,51 +419,203 @@ function ListaTavoli({ orders, onNew, onSelect, onRiordino }) {
     else attivi.push(o)
   }
 
-  return (
-    <div className="space-y-4">
-      <button onClick={onNew} className="btn-primary w-full text-lg">
-        + Nuovo Tavolo
-      </button>
+  const totali = {
+    tutti: orders.length,
+    pronti: pronti.length,
+    attivi: attivi.length,
+    cassa: inCassa.length,
+  }
 
+  const tavoliPronti = pronti.map(o => o.numero_tavolo).slice(0, 6)
+
+  // Lista ordinata per priorità: pronto → attivo → attesa_cassa → stornato
+  const sorted = [...pronti, ...attivi, ...inCassa, ...stornati]
+  const filtered = (() => {
+    if (filtro === 'pronti') return pronti
+    if (filtro === 'attivi') return attivi
+    if (filtro === 'cassa')  return inCassa
+    return sorted
+  })()
+
+  return (
+    <div className="space-y-4 pb-24">
+      {/* Banner "PRONTI DA PORTARE" */}
       {pronti.length > 0 && (
-        <div className="bg-green-700 text-white px-4 py-3 rounded-xl font-bold
-                        text-center shadow-lg animate-pulse">
-          🟢 {pronti.length} mandat{pronti.length === 1 ? 'a pronta' : 'e pronte'} da portare!
-        </div>
+        <button
+          onClick={() => setFiltro('pronti')}
+          className="w-full rounded-card-lg px-4 py-3 text-left shadow-md
+                     bg-gradient-to-br from-success to-successInk text-text
+                     active:scale-[0.98] transition-transform"
+        >
+          <div className="flex items-center gap-3">
+            <span className="relative inline-flex w-3 h-3">
+              <span className="absolute inset-0 rounded-full bg-text animate-pulseDot" />
+              <span className="relative inline-block w-3 h-3 rounded-full bg-text" />
+            </span>
+            <div className="flex-1 min-w-0">
+              <div className="text-[11px] font-extrabold tracking-[1.4px] uppercase opacity-90">
+                🔔 Pronti da portare
+              </div>
+              <div className="text-[17px] font-extrabold tabular-nums leading-tight">
+                {pronti.length} tavol{pronti.length === 1 ? 'o' : 'i'}
+                {tavoliPronti.length > 0 && (
+                  <span className="text-[14px] font-bold opacity-80 ml-2">
+                    · {tavoliPronti.map(t => `#${t}`).join(' ')}
+                    {pronti.length > tavoliPronti.length && '…'}
+                  </span>
+                )}
+              </div>
+            </div>
+            <ChevronLeft size={20} className="rotate-180 opacity-80" />
+          </div>
+        </button>
       )}
+
+      {/* Filter strip */}
+      <div className="grid grid-cols-4 gap-2">
+        <FilterChip
+          active={filtro === 'tutti'} onClick={() => setFiltro('tutti')}
+          label="Tutti"  count={totali.tutti}  dotCls="bg-textSoft"
+        />
+        <FilterChip
+          active={filtro === 'pronti'} onClick={() => setFiltro('pronti')}
+          label="Pronti" count={totali.pronti} dotCls="bg-success"
+        />
+        <FilterChip
+          active={filtro === 'attivi'} onClick={() => setFiltro('attivi')}
+          label="In corso" count={totali.attivi} dotCls="bg-warning"
+        />
+        <FilterChip
+          active={filtro === 'cassa'} onClick={() => setFiltro('cassa')}
+          label="Conto" count={totali.cassa} dotCls="bg-gold"
+        />
+      </div>
 
       {orders.length === 0 && (
-        <p className="text-center opacity-60 py-8">Nessun ordine</p>
+        <p className="text-center text-textSoft py-16 font-semibold">
+          Nessun ordine attivo
+        </p>
       )}
 
-      <SezioneCards titolo="🟢 Pronti da portare"  orders={pronti}   onSelect={onSelect} onRiordino={onRiordino} />
-      <SezioneCards titolo="🟡 In preparazione"    orders={attivi}   onSelect={onSelect} onRiordino={onRiordino} />
-      <SezioneCards titolo="💵 In attesa cassa"    orders={inCassa}  onSelect={onSelect} variant="warning" />
-      <SezioneCards titolo="⚠️ Stornati"           orders={stornati} onSelect={onSelect} variant="danger" />
+      {orders.length > 0 && filtered.length === 0 && (
+        <p className="text-center text-textMute py-10 font-semibold">
+          Nessun tavolo in questo filtro
+        </p>
+      )}
+
+      <ul className="flex flex-col gap-3">
+        {filtered.map(o => (
+          <CompactOrderCard
+            key={o.id}
+            order={o}
+            onSelect={onSelect}
+            onRiordino={onRiordino}
+          />
+        ))}
+      </ul>
+
+      {/* FAB Nuovo Tavolo */}
+      <button
+        onClick={onNew}
+        aria-label="Nuovo tavolo"
+        title="Nuovo tavolo"
+        className="fixed bottom-5 right-5 z-30
+                   inline-flex items-center gap-2 pl-4 pr-5 py-3 rounded-fab
+                   bg-gradient-to-br from-gold to-goldDeep text-bg
+                   font-extrabold text-base shadow-cta active:scale-95 transition-transform"
+      >
+        <Plus size={22} strokeWidth={3} />
+        Nuovo Tavolo
+      </button>
     </div>
   )
 }
 
-function SezioneCards({ titolo, orders, onSelect, variant, onRiordino }) {
-  if (orders.length === 0) return null
+function FilterChip({ active, onClick, label, count, dotCls }) {
   return (
-    <div>
-      <h3 className="font-bold mb-2 text-base">
-        {titolo} <span className="text-sm font-normal opacity-60">({orders.length})</span>
-      </h3>
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
-                      mobile-landscape:grid-cols-2 gap-3">
-        {orders.map(o => (
-          <CompactOrderCard key={o.id} order={o} onSelect={onSelect} variant={variant} onRiordino={onRiordino} />
-        ))}
-      </div>
-    </div>
+    <button
+      onClick={onClick}
+      className={`flex flex-col items-center justify-center gap-0.5 py-2 rounded-btn
+                  font-extrabold text-[11px] uppercase tracking-[0.6px]
+                  active:scale-95 transition-transform
+                  ${active
+                    ? 'bg-surfaceHi text-text border border-gold/60 shadow-sm'
+                    : 'bg-surface text-textSoft border border-borderSoft'}`}
+    >
+      <span className="inline-flex items-center gap-1.5">
+        <span className={`inline-block w-1.5 h-1.5 rounded-full ${dotCls}`} />
+        {label}
+      </span>
+      <span className="text-[14px] font-extrabold tabular-nums text-text leading-none">
+        {count}
+      </span>
+    </button>
   )
 }
 
 // -------------------- COMPACT ORDER CARD --------------------
 
-function CompactOrderCard({ order, onSelect, variant, onRiordino }) {
+// stato globale ordine → meta visivo (border-l + banner)
+function metaStatoOrdine(order, items) {
+  if (order.stato === 'stornato') {
+    return {
+      borderCls: 'border-l-danger',
+      bannerCls: 'bg-dangerSoft text-danger',
+      label: 'STORNATO',
+      pulseBanner: false,
+    }
+  }
+  if (order.stato === 'attesa_cassa') {
+    return {
+      borderCls: 'border-l-gold',
+      bannerCls: 'bg-goldSoft text-gold',
+      label: 'ATTESA CASSA',
+      pulseBanner: false,
+    }
+  }
+  const stato = statoCameriereOrdine(items)
+  if (stato === 'pronto') {
+    return {
+      borderCls: 'border-l-success',
+      bannerCls: 'bg-successSoft text-success',
+      label: 'PRONTI DA PORTARE',
+      pulseBanner: true,
+    }
+  }
+  if (stato === 'consegnato') {
+    return {
+      borderCls: 'border-l-textMute',
+      bannerCls: 'bg-[rgba(196,168,130,0.08)] text-textMute',
+      label: 'CONCLUSO',
+      pulseBanner: false,
+    }
+  }
+  const partial = items.some(i => i.mandata_stato === 'in_preparazione' || i.mandata_stato === 'pronta')
+  if (partial) {
+    return {
+      borderCls: 'border-l-warning',
+      bannerCls: 'bg-warningSoft text-warning',
+      label: 'IN PREPARAZIONE',
+      pulseBanner: false,
+    }
+  }
+  return {
+    borderCls: 'border-l-textSoft',
+    bannerCls: 'bg-[rgba(196,168,130,0.14)] text-textSoft',
+    label: 'IN ATTESA',
+    pulseBanner: false,
+  }
+}
+
+function statoMandataToIndicator(stato) {
+  if (stato === 'consegnata')       return 'consegnata'
+  if (stato === 'pronta')           return 'pronto'
+  if (stato === 'in_preparazione')  return 'in_preparazione'
+  if (stato === 'in_pausa')         return 'bloccata'
+  return 'in_attesa'
+}
+
+function CompactOrderCard({ order, onSelect, onRiordino }) {
   const items = order.order_items || []
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
@@ -471,102 +625,107 @@ function CompactOrderCard({ order, onSelect, variant, onRiordino }) {
   const barNumeri    = getNumeriMandata(barItems)
 
   const minuti = Math.max(0, Math.floor((Date.now() - new Date(order.created_at)) / 60000))
-  const ora = new Date(order.created_at)
-    .toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })
-
-  // Bar M2 bloccata visibile?
-  const barM2Bloccata = barGroups[2] && barGroups[2].every(i => i.mandata_stato === 'in_attesa')
-
-  let bordo = 'border-l-yellow-500 bg-yellow-900/15'
-  let pulse = ''
-  if (variant === 'warning') bordo = 'border-l-amber-500 bg-amber-900/15'
-  else if (variant === 'danger') bordo = 'border-l-red-500 bg-red-900/15'
-  else {
-    const stato = statoCameriereOrdine(items)
-    if (stato === 'pronto') { bordo = 'border-l-green-500 bg-green-900/20'; pulse = 'animate-pulse' }
-    else if (stato === 'consegnato') { bordo = 'border-l-blue-500 bg-blue-900/15' }
-  }
-
-  const renderRiepilogoMandate = (numeri, groups) => {
-    if (numeri.length === 0) return null
-    return (
-      <span className="text-xs">
-        {numeri.map(n => {
-          const s = getStatoMandataDisplay(groups[n])
-          let icon = '⏳'
-          if (s === 'in_pausa')      icon = '⏸️'
-          else if (s === 'consegnata') icon = '✅'
-          else if (s === 'pronta')     icon = '🟢'
-          else if (s === 'in_preparazione') icon = '🔥'
-          else if (groups[n].every(i => i.mandata_stato === 'in_attesa') && groups[n].some(i => i.categoria === 'bar' && i.mandata === 2)) icon = '🔒'
-          return <span key={n} className="ml-1">M{n}{icon}</span>
-        })}
-      </span>
-    )
-  }
+  const meta = metaStatoOrdine(order, items)
+  const isContanti = order.tipo_pagamento === 'contanti'
 
   return (
-    <div
+    <li
       onClick={() => onSelect && onSelect(order.id)}
-      className={`relative card border-l-4 ${bordo} ${pulse}
-                  cursor-pointer active:scale-[0.98] transition-transform`}
+      className={`cursor-pointer active:scale-[0.98] transition-transform
+                  bg-surface border border-borderSoft border-l-4 ${meta.borderCls}
+                  rounded-card p-3 shadow-sm flex flex-col gap-2`}
     >
-      <div className="flex items-center gap-2 flex-wrap mb-1">
-        <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="md" />
-        {order.nome_cliente && (
-          <span className="text-sm font-bold">· {order.nome_cliente}</span>
-        )}
-        {order.tipo_pagamento === 'bancomat' && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-blue-900/50 border border-blue-700">
-            💳
-          </span>
-        )}
-        {order.tipo_pagamento === 'contanti' && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-emerald-900/50 border border-emerald-700">
-            💵
-          </span>
-        )}
-        {order.stato === 'attesa_cassa' && (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-700 text-white uppercase tracking-wide">
-            in cassa
-          </span>
-        )}
-        {order.stato === 'stornato' && (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-red-700 text-white uppercase tracking-wide">
-            stornato
-          </span>
-        )}
-        <span className="ml-auto font-bold text-base text-green-400">
-          € {Number(order.totale).toFixed(2)}
+      {/* row 1 */}
+      <div className="flex items-center gap-2.5">
+        <div className={`w-11 h-11 rounded-btn flex items-center justify-center
+                         text-[20px] font-extrabold tabular-nums shrink-0
+                         ${meta.bannerCls}`}>
+          {order.numero_tavolo}
+        </div>
+        <div className="flex-1 min-w-0">
+          <div className="text-[16px] font-bold leading-tight text-text truncate">
+            {order.nome_cliente || `Tav. ${order.numero_tavolo}`}
+          </div>
+          <div className="flex items-center gap-2.5 mt-[3px] text-textSoft text-[12.5px] font-semibold">
+            <span>👥 {order.n_persone || 1}</span>
+            {minuti > 0 && (
+              <span className={minuti > 30 ? 'text-warning' : ''}>
+                ⏱ {minuti}m
+              </span>
+            )}
+            {order.turno > 1 && (
+              <span className="text-gold">T{order.turno}</span>
+            )}
+          </div>
+        </div>
+        <div className="text-right shrink-0">
+          <div className="text-[19px] font-extrabold tabular-nums text-text leading-none">
+            € {Number(order.totale).toFixed(2)}
+          </div>
+          {order.tipo_pagamento && (
+            <span className={`inline-flex items-center gap-1 mt-1.5 px-1.5 py-[3px] rounded-badge
+                              text-[10.5px] font-extrabold tracking-wide
+                              ${isContanti
+                                ? 'bg-successSoft text-success'
+                                : 'bg-infoSoft text-info'}`}>
+              {isContanti ? <Banknote size={11} /> : <CreditCard size={11} />}
+              {isContanti ? 'CONT' : 'BANC'}
+            </span>
+          )}
+        </div>
+      </div>
+
+      {/* row 2: mandata indicators */}
+      {(cucinaNumeri.length > 0 || barNumeri.length > 0) && (
+        <div className="flex flex-wrap gap-1.5">
+          {cucinaNumeri.map(n => (
+            <MandataIndicator
+              key={`c-${n}`}
+              source="cucina"
+              mandata={n}
+              stato={statoMandataToIndicator(getStatoMandataDisplay(cucinaGroups[n]))}
+            />
+          ))}
+          {barNumeri.map(n => {
+            const sDisplay = getStatoMandataDisplay(barGroups[n])
+            const isBarBlocked = n === 2 && barGroups[n].every(i => i.mandata_stato === 'in_attesa')
+            return (
+              <MandataIndicator
+                key={`b-${n}`}
+                source="bar"
+                mandata={n}
+                stato={isBarBlocked ? 'bloccata' : statoMandataToIndicator(sDisplay)}
+              />
+            )
+          })}
+        </div>
+      )}
+
+      {/* row 3: banner stato */}
+      <div className={`flex items-center justify-between px-2.5 py-1.5 rounded-[10px]
+                       text-[11px] font-extrabold uppercase tracking-[0.6px] ${meta.bannerCls}`}>
+        <span className="inline-flex items-center gap-1.5">
+          {meta.pulseBanner && (
+            <span className="relative inline-block w-2 h-2">
+              <span className="absolute inset-0 rounded-full bg-current animate-pulseDot" />
+              <span className="relative inline-block w-2 h-2 rounded-full bg-current" />
+            </span>
+          )}
+          {meta.label}
         </span>
-      </div>
-
-      <div className="flex flex-wrap items-center gap-x-3 gap-y-1 text-sm">
-        <span>🍳 {renderRiepilogoMandate(cucinaNumeri, cucinaGroups) || '—'}</span>
-        <span>🍺 {renderRiepilogoMandate(barNumeri, barGroups) || '—'}</span>
-      </div>
-
-      <div className="mt-1 flex items-center justify-between text-xs opacity-70">
-        <span>{ora} · ⏱ {minuti} min</span>
-        {barM2Bloccata && (
-          <span className="text-yellow-400 font-semibold">🔒 Caffè/amari in attesa</span>
-        )}
-      </div>
-
-      {onRiordino && order.stato === 'confermato' && (
-        <div className="mt-2 flex justify-end">
+        {onRiordino && order.stato === 'confermato' && (
           <button
             type="button"
             onClick={(e) => { e.stopPropagation(); onRiordino(order) }}
-            className="px-3 py-1 rounded-lg bg-cyan-700 hover:bg-cyan-600
-                       text-white text-xs font-semibold active:scale-95"
-            title="Aggiungi un riordino veloce a questo tavolo"
+            className="px-2 py-0.5 rounded-badge bg-info/30 text-info text-[10px]
+                       font-extrabold uppercase active:scale-95"
+            title="Aggiungi un riordino veloce"
           >
             + Riordino
           </button>
-        </div>
-      )}
-    </div>
+        )}
+      </div>
+    </li>
   )
 }
 
@@ -615,57 +774,58 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
 
   return (
     <div className="pb-6">
-      <div className="flex items-center justify-between mb-2">
-        <span className="text-sm opacity-70">Nuovo ordine</span>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[11px] font-extrabold tracking-[1.4px] uppercase text-textSoft">
+          Step 1 · Dati tavolo
+        </span>
         <button
           type="button"
           onClick={onRefresh}
           disabled={refreshing}
           aria-label="Ricarica menu"
           title="Ricarica menu"
-          className={`w-9 h-9 rounded-lg bg-pannello border border-bordo text-base
-                      flex items-center justify-center
-                      active:scale-95 transition-transform
+          className={`w-10 h-10 rounded-btn bg-surface border border-border text-textSoft
+                      flex items-center justify-center active:scale-95 transition-transform
                       disabled:opacity-50 ${refreshing ? 'animate-spin' : ''}`}
         >
-          🔄
+          <RefreshCw size={16} />
         </button>
       </div>
 
       <div className="grid grid-cols-2 gap-3 mb-3">
         <label className="block">
-          <span className="text-sm opacity-80">N. Tavolo</span>
+          <span className="text-[12px] font-semibold text-textSoft uppercase tracking-wider">N. Tavolo</span>
           <input
             ref={tavoloRef}
             type="number" inputMode="numeric" min="1"
             value={tavolo} onChange={e => setTavolo(e.target.value)}
-            className="input-base mt-1" placeholder="es. 12"
+            className="input-base mt-1 tabular-nums" placeholder="12"
           />
         </label>
         <label className="block">
-          <span className="text-sm opacity-80">N. Persone</span>
+          <span className="text-[12px] font-semibold text-textSoft uppercase tracking-wider">N. Persone</span>
           <input
             type="number" inputMode="numeric" min="1" max="30"
             value={persone} onChange={e => setPersone(e.target.value)}
-            className="input-base mt-1"
+            className="input-base mt-1 tabular-nums"
           />
         </label>
       </div>
 
       <label className="block mb-3">
-        <span className="text-sm opacity-80">Nome cliente *</span>
+        <span className="text-[12px] font-semibold text-textSoft uppercase tracking-wider">Nome cliente *</span>
         <input
           type="text"
           value={nomeCliente}
           onChange={e => setNomeCliente(e.target.value)}
           className="input-base mt-1"
-          placeholder="Nome del capotavola (es. Mattia)"
+          placeholder="Capotavola (es. Mattia)"
           required
         />
       </label>
 
-      <label className="block mb-3">
-        <span className="text-sm opacity-80">Note (opzionali)</span>
+      <label className="block mb-4">
+        <span className="text-[12px] font-semibold text-textSoft uppercase tracking-wider">Note (opzionali)</span>
         <input
           type="text" value={note} onChange={e => setNote(e.target.value)}
           className="input-base mt-1" placeholder="Allergie, richieste..."
@@ -677,20 +837,27 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
         quantities={qty}
         onChange={setQty}
         footer={
-          <div className="rounded-xl border border-bordo bg-pannello p-3">
-            <div className="flex items-center justify-between mb-2">
-              <span className="text-sm opacity-80">{totPezzi} pezzi</span>
-              <span className="text-xl font-bold">€ {totale.toFixed(2)}</span>
+          <div className="rounded-card border border-border bg-surface p-3 shadow-md">
+            <div className="flex items-center justify-between mb-2.5">
+              <span className="text-[12.5px] font-semibold text-textSoft tabular-nums">
+                {totPezzi} {totPezzi === 1 ? 'pezzo' : 'pezzi'}
+              </span>
+              <span className="text-[24px] font-extrabold tabular-nums text-gold leading-none">
+                € {totale.toFixed(2)}
+              </span>
             </div>
             <button
               onClick={submit}
               disabled={!canSubmit}
-              className="btn-success w-full text-lg"
+              className="w-full min-h-btn rounded-btn font-extrabold text-lg
+                         bg-gradient-to-br from-gold to-goldDeep text-bg
+                         active:scale-95 transition-transform shadow-cta
+                         disabled:opacity-40 disabled:active:scale-100"
             >
-              Avanti → Pagamento
+              Pagamento →
             </button>
             {!canSubmit && (
-              <p className="text-xs opacity-70 mt-2 text-center">
+              <p className="text-[11px] text-textMute mt-2 text-center font-semibold">
                 Compila tavolo, nome cliente e almeno una voce
               </p>
             )}
@@ -731,66 +898,94 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
 
   return (
     <div className="space-y-4 pb-6">
-      <h2 className="text-xl font-bold">Riepilogo ordine</h2>
+      <div>
+        <div className="text-[11px] font-extrabold tracking-[1.4px] uppercase text-textSoft mb-1">
+          Step 3 · Pagamento
+        </div>
+        <h2 className="font-display text-[24px] leading-tight text-text">
+          Riepilogo ordine
+        </h2>
+      </div>
 
-      <div className="card space-y-1">
-        <p className="text-sm opacity-80">
-          Tav. <strong>{draft.tavolo}</strong> · {draft.persone} pers. · <strong>{draft.nomeCliente}</strong>
+      <div className="bg-surface border border-borderSoft rounded-card p-4 shadow-sm">
+        <p className="text-[13px] text-textSoft font-semibold">
+          Tav. <strong className="text-text tabular-nums">{draft.tavolo}</strong> · {draft.persone} pers. ·{' '}
+          <strong className="text-text">{draft.nomeCliente}</strong>
         </p>
         {draft.note && (
-          <p className="text-sm bg-yellow-900/30 border border-yellow-700 rounded-lg p-2">
+          <p className="text-[13px] mt-2 bg-warningSoft border border-warning/40 text-warning rounded-badge p-2">
             Note: {draft.note}
           </p>
         )}
-        <ul className="text-sm divide-y divide-bordo">
+        <ul className="mt-3 divide-y divide-borderSoft">
           {itemsArr.map((it, idx) => (
-            <li key={`${it.menuItem.id}-${it.mandata}-${idx}`} className="py-1 flex items-center gap-2">
-              <span className="text-[10px] px-2 py-0.5 rounded-full bg-cameriere/40 border border-cameriere">
+            <li key={`${it.menuItem.id}-${it.mandata}-${idx}`} className="py-1.5 flex items-center gap-2 text-[14px]">
+              <span className="px-1.5 py-0.5 rounded-badge bg-wineSoft border border-wine/40 text-text text-[10.5px] font-extrabold">
                 M{it.mandata}
               </span>
-              <span className="flex-1">{it.menuItem.nome}</span>
-              <span className="opacity-80">× {it.quantita}</span>
-              <span className="font-semibold">
+              <span className="flex-1 text-text">{it.menuItem.nome}</span>
+              <span className="text-textSoft tabular-nums">× {it.quantita}</span>
+              <span className="font-extrabold tabular-nums w-16 text-right">
                 € {(Number(it.menuItem.prezzo) * it.quantita).toFixed(2)}
               </span>
             </li>
           ))}
         </ul>
-        <div className="pt-2 border-t border-bordo flex items-center justify-between">
-          <span className="text-sm opacity-80">Totale</span>
-          <span className="text-2xl font-bold text-green-400">
+        <div className="pt-3 mt-2 border-t border-borderSoft flex items-center justify-between">
+          <span className="text-[12px] uppercase tracking-wider font-bold text-textSoft">Totale</span>
+          <span className="text-[36px] font-extrabold tabular-nums text-gold leading-none">
             € {totale.toFixed(2)}
           </span>
         </div>
       </div>
 
-      <h3 className="font-bold text-lg mt-2">Metodo di pagamento</h3>
+      <div className="text-[11px] font-extrabold tracking-[1.4px] uppercase text-textSoft pt-2">
+        Metodo di pagamento
+      </div>
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
         <button
           disabled={busy}
           onClick={handleBancomat}
-          className="card bg-blue-900/30 border-2 border-blue-700 hover:bg-blue-900/50
-                     min-h-[6rem] flex flex-col items-center justify-center text-xl font-bold"
+          className="bg-surface border-2 border-info/60 rounded-card-lg p-4
+                     min-h-[110px] flex flex-col items-start justify-center gap-2
+                     active:scale-95 transition-transform shadow-sm
+                     disabled:opacity-50 disabled:active:scale-100"
         >
-          💳 BANCOMAT
-          <span className="text-xs font-normal opacity-80 mt-1">
-            Incasso immediato, parte a cucina/bar
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-btn bg-gradient-to-br from-info to-info/60
+                            flex items-center justify-center text-bg">
+              <CreditCard size={24} strokeWidth={2.5} />
+            </div>
+            <span className="text-[22px] font-extrabold text-text">BANCOMAT</span>
+          </div>
+          <span className="text-[12.5px] text-textSoft font-semibold">
+            Conferma diretta · niente passaggio in cassa
           </span>
         </button>
         <button
           disabled={busy}
           onClick={handleContanti}
-          className="card bg-emerald-900/30 border-2 border-emerald-700 hover:bg-emerald-900/50
-                     min-h-[6rem] flex flex-col items-center justify-center text-xl font-bold"
+          className="bg-surface border-2 border-success/60 rounded-card-lg p-4
+                     min-h-[110px] flex flex-col items-start justify-center gap-2
+                     active:scale-95 transition-transform shadow-sm
+                     disabled:opacity-50 disabled:active:scale-100"
         >
-          💵 CONTANTI
-          <span className="text-xs font-normal opacity-80 mt-1">
-            Cliente in cassa, attende incasso
+          <div className="flex items-center gap-3">
+            <div className="w-12 h-12 rounded-btn bg-gradient-to-br from-success to-successInk
+                            flex items-center justify-center text-bg">
+              <Banknote size={24} strokeWidth={2.5} />
+            </div>
+            <span className="text-[22px] font-extrabold text-text">CONTANTI</span>
+          </div>
+          <span className="text-[12.5px] text-textSoft font-semibold">
+            Cliente paga in cassa · ordine in coda
           </span>
         </button>
       </div>
 
-      <button onClick={onBack} disabled={busy} className="btn-neutral w-full">
+      <button onClick={onBack} disabled={busy}
+              className="w-full min-h-btn rounded-btn border border-border text-textSoft
+                         font-semibold active:scale-95 transition-transform">
         ← Cambia ordine
       </button>
     </div>
@@ -844,23 +1039,30 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
 
     return (
       <div className="pb-6">
-        <p className="mb-3 font-semibold">
-          Aggiungi al tavolo {order.numero_tavolo}{order.nome_cliente ? ' · ' + order.nome_cliente : ''}
+        <p className="mb-3 font-semibold text-textSoft text-[14px]">
+          Aggiungi al tavolo{' '}
+          <strong className="text-text tabular-nums">{order.numero_tavolo}</strong>
+          {order.nome_cliente ? <> · <strong className="text-text">{order.nome_cliente}</strong></> : null}
         </p>
         <MenuSelector
           items={menu}
           quantities={qty}
           onChange={setQty}
           footer={
-            <div className="rounded-xl border border-bordo bg-pannello p-3">
-              <div className="flex items-center justify-between mb-2">
-                <span className="text-sm opacity-80">{totPezziAgg} pezzi</span>
-                <span className="text-xl font-bold">+ € {totaleAgg.toFixed(2)}</span>
+            <div className="rounded-card border border-border bg-surface p-3 shadow-md">
+              <div className="flex items-center justify-between mb-2.5">
+                <span className="text-[12.5px] font-semibold text-textSoft tabular-nums">
+                  {totPezziAgg} pezzi
+                </span>
+                <span className="text-[22px] font-extrabold tabular-nums text-gold leading-none">
+                  + € {totaleAgg.toFixed(2)}
+                </span>
               </div>
               <div className="flex gap-2">
                 <button
                   onClick={() => { setAdding(false); setQty({}) }}
-                  className="btn-neutral flex-1"
+                  className="flex-1 min-h-btn rounded-btn border border-border bg-surface
+                             text-textSoft font-semibold active:scale-95 transition-transform"
                 >
                   Annulla
                 </button>
@@ -879,7 +1081,10 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
                       setBusy(false)
                     }
                   }}
-                  className="btn-success flex-1"
+                  className="flex-1 min-h-btn rounded-btn font-extrabold text-text
+                             bg-gradient-to-br from-gold to-goldDeep shadow-cta
+                             active:scale-95 transition-transform
+                             disabled:opacity-40 disabled:active:scale-100"
                 >
                   Aggiungi
                 </button>
@@ -936,45 +1141,56 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
     <div className="space-y-4 pb-6">
       <div className="flex items-center justify-between flex-wrap gap-2">
         <div className="flex items-center gap-2 flex-wrap">
-          <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="lg" />
+          <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="lg"
+                      variant={stornato ? 'danger' : 'gold'} />
           {order.nome_cliente && (
-            <span className="text-xl font-bold">· {order.nome_cliente}</span>
+            <span className="text-[20px] font-extrabold text-text">· {order.nome_cliente}</span>
           )}
         </div>
-        <span className="text-2xl font-bold text-green-400">
+        <span className="text-[28px] font-extrabold tabular-nums text-gold leading-none">
           € {Number(order.totale).toFixed(2)}
         </span>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
         {order.tipo_pagamento === 'bancomat' && (
-          <span className="badge bg-blue-700 text-white">💳 Bancomat</span>
+          <span className="pill bg-infoSoft text-info border border-info/40">
+            <CreditCard size={12} /> Bancomat
+          </span>
         )}
         {order.tipo_pagamento === 'contanti' && (
-          <span className="badge bg-emerald-700 text-white">💵 Contanti</span>
+          <span className="pill bg-successSoft text-success border border-success/40">
+            <Banknote size={12} /> Contanti
+          </span>
         )}
         {inCassa && (
-          <span className="badge bg-amber-700 text-white">⏳ In attesa cassa</span>
+          <span className="pill bg-goldSoft text-gold border border-gold/40">
+            ⏳ In attesa cassa
+          </span>
         )}
         {stornato && (
-          <span className="badge bg-red-700 text-white animate-pulse">⚠️ Stornato</span>
+          <span className="pill bg-dangerSoft text-danger border border-danger/40 animate-blink">
+            ⚠️ Stornato
+          </span>
         )}
       </div>
 
       {stornato && (
-        <div className="bg-red-900/40 border border-red-700 rounded-xl p-3">
-          <p className="font-bold text-red-300 mb-1">ORDINE IN PAUSA</p>
+        <div className="bg-dangerSoft border border-danger/60 rounded-card p-3">
+          <p className="font-extrabold text-danger mb-1 uppercase tracking-wider text-[12px]">
+            Ordine in pausa
+          </p>
           {order.storno_note && (
-            <p className="text-sm break-words">Motivo: {order.storno_note}</p>
+            <p className="text-[13px] break-words text-text">Motivo: {order.storno_note}</p>
           )}
-          <p className="text-xs opacity-80 mt-1">
+          <p className="text-[11px] text-textSoft mt-1 font-semibold">
             La cassa lo ri-confermerà dopo l'incasso.
           </p>
         </div>
       )}
 
       {order.note && (
-        <p className="text-sm bg-yellow-900/40 border border-yellow-700 rounded-xl p-2">
+        <p className="text-[13px] bg-warningSoft border border-warning/40 text-warning rounded-card p-2.5">
           Note: {order.note}
         </p>
       )}
@@ -1015,36 +1231,45 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onInv
               setBusy(false)
             }
           }}
-          className="w-full rounded-xl bg-amber-600 text-white font-bold py-3 active:scale-95 animate-pulse"
+          className="w-full min-h-btn rounded-btn font-extrabold py-3 text-text
+                     bg-gradient-to-br from-gold to-goldDeep shadow-cta
+                     active:scale-95 transition-transform animate-pulseUrgent"
         >
-          ☕ Invia M4 — Dolci, Caffè e Amari ({m4Items.reduce((s, i) => s + i.quantita, 0)} pezzi)
+          ☕ Sblocca M4 — Dolci · Caffè · Amari ({m4Items.reduce((s, i) => s + i.quantita, 0)} pezzi)
         </button>
       )}
 
       {!stornato && !inCassa && (
-        <button onClick={() => setAdding(true)} className="btn-neutral w-full" disabled={busy}>
-          + Aggiungi item
+        <button
+          onClick={() => setAdding(true)}
+          disabled={busy}
+          className="w-full min-h-btn rounded-btn border border-info/50 bg-infoSoft text-info
+                     font-extrabold active:scale-95 transition-transform">
+          + Riordino
         </button>
       )}
 
       {!stornato && (
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-          <button
-            disabled={busy}
-            onClick={azioneStorna}
-            className="px-3 py-3 rounded-xl font-semibold bg-red-700 text-white active:scale-95"
-          >
-            ⚠️ Storna ordine
-          </button>
           {order.tipo_pagamento === 'bancomat' && (
             <button
               disabled={busy}
               onClick={azionePassaAContanti}
-              className="px-3 py-3 rounded-xl font-semibold bg-amber-700 text-white active:scale-95"
+              className="px-3 py-3 rounded-btn font-extrabold border border-border bg-surface text-textSoft
+                         active:scale-95 transition-transform"
             >
-              💵 Passa a contanti
+              💳 → 💵 Bancomat in Contanti
             </button>
           )}
+          <button
+            disabled={busy}
+            onClick={azioneStorna}
+            className={`px-3 py-3 rounded-btn font-extrabold border border-danger/60 bg-dangerSoft text-danger
+                        active:scale-95 transition-transform
+                        ${order.tipo_pagamento === 'bancomat' ? '' : 'sm:col-span-2'}`}
+          >
+            ⚠️ Storna ordine
+          </button>
         </div>
       )}
     </div>
@@ -1055,8 +1280,10 @@ function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, o
   if (numeri.length === 0) return null
   return (
     <div>
-      <h3 className={`font-bold mb-2 ${colore}`}>{titolo}</h3>
-      <ul className="space-y-3">
+      <h3 className={`font-extrabold mb-2 text-[13px] uppercase tracking-[1.4px] ${colore}`}>
+        {titolo}
+      </h3>
+      <ul className="flex flex-col gap-2.5">
         {numeri.map(n => (
           <MandataRow
             key={n}
@@ -1079,34 +1306,67 @@ function MandataRow({ numero, items, categoria, disabled, onConsegnata }) {
   const barM2Bloccata = categoria === 'bar' && numero === 2
     && items.every(i => i.mandata_stato === 'in_attesa')
 
-  let bordo = 'border-l-yellow-500 bg-yellow-900/15'
-  if (stato === 'consegnata') bordo = 'border-l-blue-500 bg-blue-900/15 opacity-70'
-  else if (stato === 'pronta') bordo = 'border-l-green-500 bg-green-900/20'
-  else if (stato === 'in_pausa') bordo = 'border-l-red-500 bg-red-900/20'
-  else if (barM2Bloccata) bordo = 'border-l-yellow-500 bg-yellow-900/10 opacity-70'
+  // Mapping stato → token visivo coerente con MandataBlock
+  let cls = 'border-warning bg-warningSoft/40 text-warning'
+  let icon = '⏳'
+  let label = 'IN ATTESA'
+  if (stato === 'consegnata') {
+    cls = 'border-textMute bg-[rgba(196,168,130,0.06)] text-textMute opacity-70'
+    icon = '✓'; label = 'CONSEGNATA'
+  } else if (stato === 'pronta') {
+    cls = 'border-success bg-successSoft text-success'
+    icon = '✅'; label = 'PRONTA'
+  } else if (stato === 'in_pausa') {
+    cls = 'border-danger bg-dangerSoft text-danger'
+    icon = '⏸️'; label = 'IN PAUSA'
+  } else if (stato === 'in_preparazione') {
+    cls = 'border-warning bg-warningSoft text-warning'
+    icon = '🔄'; label = 'IN PREPARAZIONE'
+  } else if (barM2Bloccata) {
+    cls = 'border-borderSoft bg-[rgba(255,255,255,0.04)] text-textMute opacity-70'
+    icon = '🔒'; label = 'BLOCCATA'
+  }
 
-  const headerLabel = (() => {
-    if (stato === 'consegnata') return `M${numero} · ✅ consegnata`
-    if (stato === 'pronta')     return `M${numero} · 🟢 pronta`
-    if (stato === 'in_pausa')   return `M${numero} · ⏸️ in pausa`
-    if (stato === 'in_preparazione') return `M${numero} · 🔥 in preparazione`
-    if (barM2Bloccata)          return `M${numero} · 🔒 in attesa`
-    return `M${numero} · ⏳ in attesa`
-  })()
+  const sourceIcon = categoria === 'cucina' ? '🍳' : '🍺'
 
   return (
-    <li className={`border-l-4 ${bordo} rounded-r-lg p-2`}>
-      <div className="text-xs font-bold uppercase tracking-widest mb-2 opacity-90">
-        {headerLabel}
+    <li className={`relative rounded-card p-3 border-[1.5px] ${cls.split(' ').find(c => c.startsWith('border'))} bg-surface shadow-sm`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center justify-center w-[30px] h-[30px] rounded-[9px]
+                           bg-surfaceElev border border-border text-base">
+            {sourceIcon}
+          </span>
+          <div>
+            <div className="text-[14px] font-extrabold tracking-[0.4px] text-text">
+              MANDATA {numero}
+            </div>
+            <div className={`text-[11px] font-bold uppercase tracking-[0.4px] mt-[1px] ${cls.split(' ').find(c => c.startsWith('text'))}`}>
+              {icon} {label}
+            </div>
+          </div>
+        </div>
       </div>
-      <ul className="text-sm space-y-1">
+
+      {/* Items */}
+      <ul className="flex flex-col gap-1.5">
         {items.map(it => (
-          <li key={it.id} className="flex items-center justify-between gap-2">
-            <span className="break-words whitespace-normal">{it.nome_item}</span>
-            <span className="opacity-80 shrink-0">× {it.quantita}</span>
+          <li key={it.id}
+              className="flex items-center gap-2.5 px-2.5 py-2 rounded-[10px]
+                         bg-[rgba(196,168,130,0.06)] border border-borderSoft">
+            <span className="min-w-[36px] h-[28px] px-2 rounded-badge inline-flex items-center justify-center
+                             bg-surfaceElev text-text font-extrabold text-[14px] tabular-nums border border-border">
+              {it.quantita}×
+            </span>
+            <span className={`flex-1 text-[14px] font-semibold break-words
+                              ${stato === 'consegnata' ? 'line-through text-textMute' : 'text-text'}`}>
+              {it.nome_item}
+            </span>
           </li>
         ))}
       </ul>
+
       {stato === 'pronta' && !disabled && (
         <button
           disabled={busy}
@@ -1114,9 +1374,10 @@ function MandataRow({ numero, items, categoria, disabled, onConsegnata }) {
             setBusy(true)
             try { await onConsegnata() } finally { setBusy(false) }
           }}
-          className="btn-success w-full mt-2 text-sm py-1"
+          className="w-full mt-2.5 min-h-[44px] rounded-btn font-extrabold text-[14px]
+                     bg-success text-bg active:scale-95 transition-transform shadow-[0_3px_0_#3F2A1F]"
         >
-          ✓ Consegnata al tavolo
+          → Consegnata al tavolo
         </button>
       )}
     </li>
@@ -1316,13 +1577,13 @@ function RiordinoRapido({ menu, draft, onProceedToPayment, onRefresh, refreshing
       )}
 
       {/* Footer fisso con totale + Avanti */}
-      <div className="fixed bottom-0 left-0 right-0 bg-sfondo border-t border-bordo
+      <div className="fixed bottom-0 left-0 right-0 bg-bg border-t border-border
                       px-4 py-3 z-30 shadow-lg">
         <div className="flex items-center justify-between mb-2">
-          <span className="text-sm opacity-80">
+          <span className="text-[12.5px] font-semibold text-textSoft tabular-nums">
             {totaleItems} {totaleItems === 1 ? 'pezzo' : 'pezzi'}
           </span>
-          <span className="text-2xl font-bold text-green-400">
+          <span className="text-[24px] font-extrabold tabular-nums text-gold leading-none">
             € {totalePrezzo.toFixed(2)}
           </span>
         </div>
@@ -1330,9 +1591,12 @@ function RiordinoRapido({ menu, draft, onProceedToPayment, onRefresh, refreshing
           type="button"
           disabled={totaleItems === 0}
           onClick={() => onProceedToPayment(qty)}
-          className="btn-primary w-full text-lg disabled:opacity-40"
+          className="w-full min-h-btn rounded-btn font-extrabold text-lg
+                     bg-gradient-to-br from-gold to-goldDeep text-bg
+                     active:scale-95 transition-transform shadow-cta
+                     disabled:opacity-40 disabled:active:scale-100"
         >
-          Avanti → Pagamento
+          Pagamento →
         </button>
       </div>
     </div>

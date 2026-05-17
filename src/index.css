@@ -7,43 +7,77 @@
     min-height: 100%;
   }
   body {
-    @apply bg-sfondo text-white;
+    background-color: #1A0F0A;
+    color: #FAF5EA;
+    font-family: Manrope, -apple-system, system-ui, sans-serif;
     -webkit-tap-highlight-color: transparent;
     overscroll-behavior-y: contain;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
   button {
     @apply select-none;
+    font-family: inherit;
   }
+  button:active {
+    transform: scale(0.985);
+  }
+}
+
+@layer utilities {
+  .tabular-nums {
+    font-variant-numeric: tabular-nums;
+  }
+  .font-display {
+    font-family: "DM Serif Display", Georgia, "Times New Roman", serif;
+  }
+  .scroll-hide::-webkit-scrollbar { display: none; }
+  .scroll-hide { scrollbar-width: none; }
+  .safe-pt { padding-top: env(safe-area-inset-top, 0); }
 }
 
 @layer components {
   .btn-base {
-    @apply min-h-btn px-4 py-2 rounded-xl font-semibold text-base
+    @apply min-h-btn px-4 py-2 rounded-btn font-bold text-base
            active:scale-95 transition-transform
            disabled:opacity-40 disabled:active:scale-100;
   }
   .btn-primary {
-    @apply btn-base bg-cameriere text-white;
+    @apply btn-base bg-wine text-text;
   }
   .btn-success {
-    @apply btn-base bg-green-600 text-white;
+    @apply btn-base bg-success text-text;
   }
   .btn-danger {
-    @apply btn-base bg-red-600 text-white;
+    @apply btn-base bg-danger text-text;
+  }
+  .btn-gold {
+    @apply btn-base bg-gold text-bg;
   }
   .btn-neutral {
-    @apply btn-base bg-pannello text-white border border-bordo;
+    @apply btn-base bg-surface text-text border border-border;
+  }
+  .btn-outline {
+    @apply btn-base bg-transparent text-textSoft border border-border;
   }
   .card {
-    @apply bg-pannello border border-bordo rounded-2xl p-4 shadow-lg;
+    @apply bg-surface border border-borderSoft rounded-card p-4 shadow-sm;
+  }
+  .card-elev {
+    @apply bg-surfaceElev border border-border rounded-card p-4 shadow-md;
   }
   .input-base {
-    @apply w-full min-h-btn px-4 py-2 rounded-xl bg-pannello
-           border border-bordo text-white text-lg
-           focus:outline-none focus:ring-2 focus:ring-cameriere;
+    @apply w-full min-h-btn px-4 py-2 rounded-btn bg-surface
+           border border-border text-text text-lg
+           placeholder:text-textMute
+           focus:outline-none focus:ring-2 focus:ring-gold focus:border-gold;
   }
   .badge {
-    @apply inline-flex items-center gap-1 px-2 py-1 rounded-full
-           text-xs font-bold;
+    @apply inline-flex items-center gap-1 px-2 py-1 rounded-badge
+           text-xs font-extrabold uppercase tracking-wider;
+  }
+  .pill {
+    @apply inline-flex items-center gap-1 px-2.5 py-1 rounded-phone
+           text-xs font-extrabold uppercase tracking-wider;
   }
 }

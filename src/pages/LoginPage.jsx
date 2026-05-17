@@ -3,7 +3,7 @@ import PinPad from '../components/PinPad.jsx'
 import { supabase } from '../supabaseClient.js'
 
 /**
- * LoginPage: tastiera PIN. Lookup su tabella users.
+ * LoginPage — PIN login. Lookup su tabella users.
  */
 export default function LoginPage({ onLogin }) {
   const [loading, setLoading] = useState(false)
@@ -31,34 +31,26 @@ export default function LoginPage({ onLogin }) {
     onLogin(data)
   }
 
-  const Header = (
-    <>
-      <h1 className="text-4xl font-extrabold tracking-tight
-                     mobile-landscape:text-2xl">
-        SagràApp
-      </h1>
-      <p className="opacity-70 mt-2 mobile-landscape:mt-1 mobile-landscape:text-sm">
-        Inserisci il tuo PIN
-      </p>
-    </>
-  )
-
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center
-                    p-6 mobile-landscape:p-3">
-      <PinPad
-        onSubmit={handleSubmit}
-        loading={loading}
-        error={error}
-        header={Header}
-      />
+    <div className="min-h-screen flex flex-col items-center justify-between
+                    py-12 px-6 mobile-landscape:py-4
+                    bg-bg text-text">
+      <div className="flex-1 w-full flex items-center justify-center">
+        <PinPad
+          onSubmit={handleSubmit}
+          loading={loading}
+          error={error}
+          subtitle="Inserisci PIN"
+        />
+      </div>
 
-      <div className="mt-8 text-center text-xs opacity-40 leading-relaxed">
-        <p>Sviluppato da Mattia Prosperi</p>
-        <p>
+      <div className="mt-4 text-center text-[11px] text-textMute font-semibold tracking-[1px]">
+        <p>SAGRA · v2.4.1</p>
+        <p className="mt-1 opacity-80">
+          Sviluppato da Mattia Prosperi —{' '}
           <a
             href="mailto:masterxpro@gmail.com"
-            className="hover:opacity-100 hover:underline"
+            className="hover:text-textSoft underline"
           >
             masterxpro@gmail.com
           </a>

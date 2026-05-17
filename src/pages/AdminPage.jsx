@@ -4,7 +4,7 @@ import { useOrders } from '../hooks/useOrders.js'
 import { useExitConfirmGuard } from '../hooks/useExitConfirmGuard.js'
 import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import OrderCard from '../components/OrderCard.jsx'
-import ServizioBadge from '../components/ServizioBadge.jsx'
+import RoleHeader, { HeaderExitBtn } from '../components/RoleHeader.jsx'
 import { getServizioAttuale, rangeOrdinePerSottocategoria } from '../utils/servizio.js'
 
 const SOTTOCATEGORIE_CUCINA = ['antipasto', 'primo', 'secondo', 'contorno', 'dolce']
@@ -43,32 +43,25 @@ export default function AdminPage({ user, onLogout }) {
   }, [servizioCorrente, impostazioni])
 
   return (
-    <div className="min-h-screen flex flex-col">
-      <header className="bg-admin px-4 py-3 flex items-center justify-between
-                         sticky top-0 z-30 mobile-landscape:py-2">
-        <div className="min-w-0">
-          <h1 className="font-bold text-lg mobile-landscape:text-base">Admin</h1>
-          <p className="text-xs opacity-90 truncate mobile-landscape:hidden">{user.nome}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <ServizioBadge impostazioni={impostazioni} />
-          <button
-            onClick={onLogout}
-            className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
-          >
-            Esci
-          </button>
-        </div>
-      </header>
+    <div className="min-h-screen flex flex-col bg-bg text-text">
+      <RoleHeader
+        role="admin"
+        title="Admin"
+        subtitle={user.nome}
+        impostazioni={impostazioni}
+        right={<HeaderExitBtn onClick={onLogout} />}
+      />
 
-      <nav className="grid grid-cols-5 gap-1 p-2 bg-pannello border-b border-bordo
-                      sticky top-[3.25rem] z-20 mobile-landscape:top-[2.5rem]
-                      mobile-landscape:p-1">
-        <TabBtn active={tab === 'ordini'}       onClick={() => setTab('ordini')}>Ordini</TabBtn>
-        <TabBtn active={tab === 'menu'}         onClick={() => setTab('menu')}>Menu</TabBtn>
-        <TabBtn active={tab === 'riepilogo'}    onClick={() => setTab('riepilogo')}>Riepilogo</TabBtn>
-        <TabBtn active={tab === 'staff'}        onClick={() => setTab('staff')}>Staff</TabBtn>
-        <TabBtn active={tab === 'impostazioni'} onClick={() => setTab('impostazioni')}>⚙️</TabBtn>
+      {/* Tab strip — scroll orizzontale con border-bottom gold attivo */}
+      <nav className="sticky top-0 z-20 bg-bg border-b border-borderSoft px-3 pt-2
+                      mobile-landscape:pt-1">
+        <div className="flex gap-1 overflow-x-auto scroll-hide">
+          <TabBtn active={tab === 'riepilogo'}    onClick={() => setTab('riepilogo')}>📊 Riepilogo</TabBtn>
+          <TabBtn active={tab === 'ordini'}       onClick={() => setTab('ordini')}>📋 Ordini</TabBtn>
+          <TabBtn active={tab === 'menu'}         onClick={() => setTab('menu')}>🍴 Menu</TabBtn>
+          <TabBtn active={tab === 'staff'}        onClick={() => setTab('staff')}>👥 Staff</TabBtn>
+          <TabBtn active={tab === 'impostazioni'} onClick={() => setTab('impostazioni')}>⚙️ Impostazioni</TabBtn>
+        </div>
       </nav>
 
       <main className="flex-1 p-4 mobile-landscape:p-3">
@@ -86,11 +79,11 @@ function TabBtn({ active, onClick, children }) {
   return (
     <button
       onClick={onClick}
-      className={`min-h-btn rounded-xl font-semibold text-sm sm:text-base
-                  mobile-landscape:min-h-[36px] mobile-landscape:rounded-lg
-                  mobile-landscape:text-xs ${
-        active ? 'bg-admin text-white' : 'bg-sfondo border border-bordo'
-      }`}
+      className={`min-h-[44px] px-4 pb-2.5 pt-2 whitespace-nowrap font-extrabold text-[13px]
+                  tracking-[0.3px] border-b-2 active:scale-95 transition-transform
+                  ${active
+                    ? 'text-gold border-gold'
+                    : 'text-textSoft border-transparent'}`}
     >
       {children}
     </button>
@@ -634,46 +627,96 @@ function TabRiepilogo() {
   }, [])
 
   if (!stats) {
-    return <p className="text-center opacity-60 py-8">Caricamento…</p>
+    return <p className="text-center text-textSoft py-8 font-semibold">Caricamento…</p>
   }
 
+  const scontrinoMedio = stats.tavoliServiti > 0
+    ? stats.incassoTotale / stats.tavoliServiti
+    : 0
+  const top5Max = stats.top5.reduce((m, [, q]) => Math.max(m, q), 0)
+
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 gap-3">
-        <StatCard label="💳 Bancomat"      value={`€ ${stats.incassoBancomat.toFixed(2)}`} />
-        <StatCard label="💵 Contanti"      value={`€ ${stats.incassoContanti.toFixed(2)}`} />
-        <StatCard label="🌞 Pranzo"        value={`€ ${stats.incassoPranzo.toFixed(2)}`} />
-        <StatCard label="🌙 Cena"          value={`€ ${stats.incassoCena.toFixed(2)}`} />
-        <StatCard label="Totale incasso"   value={`€ ${stats.incassoTotale.toFixed(2)}`} />
-        <StatCard label="Tavoli serviti"   value={stats.tavoliServiti} />
-        <StatCard label="👥 Persone servite" value={stats.personeServite} />
-        <StatCard label="Ordini aperti"    value={stats.ordiniAperti} />
+    <div className="space-y-4 pb-6">
+      {/* Hero card — INCASSO TOTALE */}
+      <div className="rounded-card-lg p-5 shadow-md
+                      bg-gradient-to-br from-gold to-goldDeep text-bg">
+        <div className="text-[11px] font-extrabold uppercase tracking-[1.6px] opacity-90">
+          Incasso totale
+        </div>
+        <div className="text-[48px] font-extrabold tabular-nums leading-none mt-1 mb-3">
+          € {stats.incassoTotale.toFixed(2)}
+        </div>
+        <div className="flex gap-2 flex-wrap">
+          <span className="pill bg-bg/30 text-bg text-[11.5px] backdrop-blur-sm">
+            💳 € {stats.incassoBancomat.toFixed(2)}
+          </span>
+          <span className="pill bg-bg/30 text-bg text-[11.5px] backdrop-blur-sm">
+            💵 € {stats.incassoContanti.toFixed(2)}
+          </span>
+        </div>
       </div>
 
-      <div>
-        <h3 className="font-bold mb-2">Top 5 prodotti</h3>
+      {/* 3 stat boxes */}
+      <div className="grid grid-cols-3 gap-2">
+        <StatBox label="Persone" value={stats.personeServite} />
+        <StatBox label="Tavoli"  value={stats.tavoliServiti} />
+        <StatBox label="Scontrino medio" value={`€ ${scontrinoMedio.toFixed(2)}`} />
+      </div>
+
+      {/* Riga servizio */}
+      <div className="grid grid-cols-2 gap-2">
+        <StatBox label="🌞 Pranzo" value={`€ ${stats.incassoPranzo.toFixed(2)}`} />
+        <StatBox label="🌙 Cena"   value={`€ ${stats.incassoCena.toFixed(2)}`} />
+      </div>
+
+      {/* Top prodotti */}
+      <div className="bg-surface border border-borderSoft rounded-card p-4 shadow-sm">
+        <h3 className="text-[14px] font-extrabold mb-3 text-text">🔥 Top 5 prodotti</h3>
         {stats.top5.length === 0 ? (
-          <p className="opacity-60 text-sm">Nessun dato</p>
+          <p className="text-textSoft text-[13px] font-semibold">Nessun dato</p>
         ) : (
-          <ol className="space-y-2">
-            {stats.top5.map(([nome, q], i) => (
-              <li key={nome} className="card flex items-center justify-between">
-                <span className="font-semibold">{i + 1}. {nome}</span>
-                <span className="font-bold text-xl">× {q}</span>
-              </li>
-            ))}
+          <ol className="space-y-2.5">
+            {stats.top5.map(([nome, q], i) => {
+              const pct = top5Max > 0 ? (q / top5Max) * 100 : 0
+              return (
+                <li key={nome}>
+                  <div className="flex items-center justify-between text-[13px] mb-1">
+                    <span className="font-semibold text-text">
+                      <span className="text-textMute tabular-nums mr-1.5">{i + 1}.</span>
+                      {nome}
+                    </span>
+                    <span className="font-extrabold tabular-nums text-gold">× {q}</span>
+                  </div>
+                  <div className="h-1.5 bg-surfaceElev rounded-full overflow-hidden">
+                    <div className="h-full bg-gradient-to-r from-gold to-goldDeep rounded-full"
+                         style={{ width: `${pct}%` }} />
+                  </div>
+                </li>
+              )
+            })}
           </ol>
         )}
+      </div>
+
+      <div className="grid grid-cols-1 gap-2">
+        <StatBox label="Ordini aperti" value={stats.ordiniAperti}
+                 highlight={stats.ordiniAperti > 0} />
       </div>
     </div>
   )
 }
 
-function StatCard({ label, value }) {
+function StatBox({ label, value, highlight = false }) {
   return (
-    <div className="card">
-      <p className="text-xs opacity-70">{label}</p>
-      <p className="text-2xl font-extrabold">{value}</p>
+    <div className={`bg-surface border rounded-card p-3 shadow-sm
+                     ${highlight ? 'border-gold/50' : 'border-borderSoft'}`}>
+      <div className="text-[10.5px] font-extrabold uppercase tracking-[1.2px] text-textSoft">
+        {label}
+      </div>
+      <div className={`text-[20px] font-extrabold tabular-nums leading-none mt-1
+                       ${highlight ? 'text-gold' : 'text-text'}`}>
+        {value}
+      </div>
     </div>
   )
 }

@@ -3,7 +3,7 @@ import { supabase } from '../supabaseClient.js'
 import { useOrders } from '../hooks/useOrders.js'
 import { useImpostazioni } from '../context/ImpostazioniContext.jsx'
 import TableBadge from '../components/TableBadge.jsx'
-import ServizioBadge from '../components/ServizioBadge.jsx'
+import RoleHeader, { HeaderExitBtn } from '../components/RoleHeader.jsx'
 import { getServizioAttuale } from '../utils/servizio.js'
 import {
   groupByMandata,
@@ -84,7 +84,7 @@ function itemsDellaStazione(orderItems, categoria) {
 
 const TICK_MS = 15_000
 
-export default function StationPage({ user, onLogout, categoria, titolo, coloreHeader }) {
+export default function StationPage({ user, onLogout, categoria, titolo, role }) {
   const [orders, setOrders] = useState([])
   const { impostazioni } = useImpostazioni()
   const [view, setView] = useState('per-tavolo')
@@ -154,38 +154,43 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
     [orders, dismissedIds]
   )
 
-  return (
-    <div className="min-h-screen flex flex-col">
-      <header className={`${coloreHeader} px-4 py-3 flex items-center justify-between
-                          sticky top-0 z-20 mobile-landscape:py-2`}>
-        <div className="min-w-0">
-          <h1 className="font-bold text-lg mobile-landscape:text-base">{titolo}</h1>
-          <p className="text-xs opacity-90 truncate">{user.nome}</p>
-        </div>
-        <div className="flex items-center gap-2">
-          <ServizioBadge impostazioni={impostazioni} />
-          <button
-            onClick={onLogout}
-            className="px-3 py-2 rounded-lg bg-white/20 text-sm font-semibold"
-          >
-            Esci
-          </button>
-        </div>
-      </header>
+  const stornatoCount = orders.filter(o => o.stato === 'stornato').length
+  const attiviCount = orders.length - stornatoCount
 
-      <nav className="grid grid-cols-2 gap-1 p-2 bg-pannello border-b border-bordo
-                      sticky top-[3.25rem] z-10 mobile-landscape:top-[2.5rem]
-                      mobile-landscape:p-1">
-        <TabBtn active={view === 'per-tavolo'} coloreHeader={coloreHeader} onClick={() => setView('per-tavolo')}>📋 Per Tavolo</TabBtn>
-        <TabBtn active={view === 'aggregato'}  coloreHeader={coloreHeader} onClick={() => setView('aggregato')}>📊 Aggregato</TabBtn>
+  return (
+    <div className="min-h-screen flex flex-col bg-bg text-text">
+      <RoleHeader
+        role={role || categoria}
+        title={titolo}
+        subtitle={user.nome}
+        impostazioni={impostazioni}
+        right={<HeaderExitBtn onClick={onLogout} />}
+      />
+
+      <div className="px-4 pt-3 pb-1 flex items-center gap-2 flex-wrap">
+        {stornatoCount > 0 && (
+          <span className="pill bg-dangerSoft text-danger border border-danger/40 animate-blink">
+            ⚠ {stornatoCount} stornat{stornatoCount === 1 ? 'o' : 'i'}
+          </span>
+        )}
+        <span className="pill bg-surfaceElev text-textSoft border border-border">
+          {attiviCount} attiv{attiviCount === 1 ? 'o' : 'i'}
+        </span>
+      </div>
+
+      <nav className="px-4 pt-3 sticky top-[unset] z-10">
+        <div className="grid grid-cols-2 gap-1 p-1 bg-surface border border-border rounded-card">
+          <TabBtn active={view === 'per-tavolo'} onClick={() => setView('per-tavolo')}>📋 Per Tavolo</TabBtn>
+          <TabBtn active={view === 'aggregato'}  onClick={() => setView('aggregato')}>📊 Aggregato</TabBtn>
+        </div>
       </nav>
 
       <main className="flex-1 p-4 mobile-landscape:p-3">
         {ordersVisibili.length === 0 ? (
-          <p className="text-center text-2xl opacity-60 py-16
-                        mobile-landscape:py-6 mobile-landscape:text-xl">
-            Tutto pronto 🎉
-          </p>
+          <div className="text-center py-16 mobile-landscape:py-6">
+            <p className="font-display text-[28px] text-text mb-1">Tutto pronto 🎉</p>
+            <p className="text-textSoft text-[14px] font-semibold">Nessun ordine da preparare</p>
+          </div>
         ) : view === 'per-tavolo' ? (
           <VistaPerTavolo
             orders={ordersVisibili}
@@ -209,14 +214,17 @@ export default function StationPage({ user, onLogout, categoria, titolo, coloreH
   )
 }
 
-function TabBtn({ active, onClick, coloreHeader, children }) {
+function TabBtn({ active, onClick, children }) {
   return (
     <button
       onClick={onClick}
-      className={`min-h-btn rounded-xl font-semibold text-sm sm:text-base
+      className={`min-h-[44px] rounded-btn font-extrabold text-[13px] sm:text-[14px]
+                  tracking-[0.3px] active:scale-95 transition-transform
                   mobile-landscape:min-h-[36px] mobile-landscape:rounded-lg
                   mobile-landscape:text-xs ${
-        active ? `${coloreHeader} text-white` : 'bg-sfondo border border-bordo'
+        active
+          ? 'bg-gold text-bg shadow-[0_2px_8px_rgba(212,160,67,0.4)]'
+          : 'bg-transparent text-textSoft'
       }`}
     >
       {children}
@@ -260,8 +268,8 @@ function VistaPerTavolo({ orders, categoria, impostazioni, onMandataInPreparazio
 
       {completati.length > 0 && (
         <>
-          <h2 className="mt-6 mb-2 text-xs uppercase tracking-widest opacity-70">
-            ✅ Completati ({completati.length}) — swipe per rimuovere
+          <h2 className="mt-6 mb-2 text-[11px] font-extrabold uppercase tracking-[1.4px] text-textMute">
+            ✅ Completati ({completati.length}) · swipe per rimuovere
           </h2>
           <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
                          mobile-landscape:grid-cols-2 gap-3">
@@ -372,11 +380,13 @@ function StationCard({ order, categoria, impostazioni, completato, onInPreparazi
   )
   const { dragHandlers, style } = useSwipeToDismiss(onDismiss, swipeAbilitato)
 
-  const sfondoCompletato = completato ? 'bg-gray-900/40 opacity-80' : ''
+  const cardBase = `relative overflow-hidden bg-surface border rounded-card-lg p-4 shadow-md
+                    ${stornato ? 'border-danger shadow-alert' : 'border-borderSoft'}
+                    ${completato ? 'opacity-70' : ''}`
 
   return (
     <li
-      className={`card relative overflow-hidden ${sfondoCompletato}`}
+      className={cardBase}
       style={style}
       {...dragHandlers}
     >
@@ -386,7 +396,7 @@ function StationCard({ order, categoria, impostazioni, completato, onInPreparazi
           onClick={onDismiss}
           aria-label="Rimuovi card"
           title="Rimuovi card"
-          className="absolute top-2 right-2 w-7 h-7 rounded-full bg-black/50 text-white text-sm
+          className="absolute top-2 right-2 w-7 h-7 rounded-full bg-bg/60 border border-border text-textSoft text-sm
                      z-20 flex items-center justify-center active:scale-90"
         >
           ✕
@@ -394,33 +404,37 @@ function StationCard({ order, categoria, impostazioni, completato, onInPreparazi
       )}
 
       {stornato && (
-        <div className="absolute inset-0 z-10 pointer-events-none
-                        bg-red-900/40 border-2 border-red-600 rounded-xl
-                        flex items-start justify-center pt-2">
-          <span className="badge bg-red-700 text-white font-bold animate-pulse">
-            ⚠️ IN PAUSA — ATTENDI CONFERMA CASSA
+        <div className="absolute top-3 left-3 right-3 z-10 pointer-events-none
+                        flex justify-center">
+          <span className="pill bg-dangerSoft text-danger border border-danger animate-blink">
+            ⚠ STORNATO · IN PAUSA · ATTENDI CASSA
           </span>
         </div>
       )}
 
-      <div className={stornato ? 'opacity-60' : ''}>
+      <div className={stornato ? 'opacity-60 pt-6' : ''}>
         <div className="flex items-center justify-between mb-3 flex-wrap gap-2 pr-8">
           <div className="flex items-center gap-2 flex-wrap">
-            <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="lg" />
-            {order.nome_cliente && <span className="font-bold">· {order.nome_cliente}</span>}
-            {order.tipo_pagamento === 'bancomat' && <span title="bancomat">💳</span>}
-            {order.tipo_pagamento === 'contanti' && <span title="contanti">💵</span>}
+            <TableBadge numero={order.numero_tavolo} persone={order.n_persone} size="lg"
+                        variant={stornato ? 'danger' : 'wine'} />
+            {order.nome_cliente && <span className="font-extrabold text-text text-[16px]">· {order.nome_cliente}</span>}
+            {order.tipo_pagamento === 'bancomat' && (
+              <span className="pill bg-infoSoft text-info text-[10px]">💳 BANC</span>
+            )}
+            {order.tipo_pagamento === 'contanti' && (
+              <span className="pill bg-successSoft text-success text-[10px]">💵 CONT</span>
+            )}
             {completato && (
-              <span className="badge bg-blue-700 text-white text-xs">✅ Completato</span>
+              <span className="pill bg-infoSoft text-info text-[10px]">✅ Completato</span>
             )}
           </div>
-          <span className="text-sm opacity-80">
+          <span className="text-[12px] text-textSoft tabular-nums font-semibold">
             {new Date(order.created_at).toLocaleTimeString('it-IT', { hour: '2-digit', minute: '2-digit' })}
           </span>
         </div>
 
         {order.note && (
-          <p className="text-sm bg-yellow-900/40 border border-yellow-700 rounded-xl p-2 mb-2">
+          <p className="text-[13px] bg-warningSoft border border-warning/40 text-warning rounded-card p-2.5 mb-2">
             Note: {order.note}
           </p>
         )}
@@ -470,46 +484,81 @@ function MandataBlock({ numero, items, categoria, timer, bloccata, disabledBySto
 
   const urgente = !disabledByStorno && !bloccata && timer?.scaduto
 
-  let bordoCls = 'border-l-yellow-500 bg-yellow-900/15'
-  if (bloccata)                         bordoCls = 'border-l-gray-600 bg-gray-800/40 opacity-50'
-  else if (urgente)                     bordoCls = 'border-l-red-500 bg-red-900/25 animate-pulse'
-  else if (stato === 'in_preparazione') bordoCls = 'border-l-orange-500 bg-orange-900/20'
+  // border + glow
+  let borderCls = 'border-border'
+  let glowCls = 'shadow-sm'
+  let bgCls = 'bg-surface'
+  if (bloccata) { borderCls = 'border-borderSoft'; bgCls = 'bg-[rgba(196,168,130,0.04)]' }
+  else if (urgente) { borderCls = 'border-danger'; glowCls = 'shadow-alert' }
+  else if (stato === 'in_preparazione') { borderCls = 'border-warning' }
+  else if (stato === 'in_attesa') { borderCls = 'border-borderSoft' }
 
   const aggr = useMemo(() => aggregaPerNome(items), [items])
 
-  const header = (() => {
-    if (bloccata)           return `M${numero} · ⏳ In attesa di M${numero - 1}`
-    if (urgente)            return `M${numero} · 🔴 URGENTE`
-    if (timer?.secondi != null && timer.secondi > 0)
-                            return `M${numero} · ⏱ ${formatCountdownSec(timer.secondi)} al via`
-    if (stato === 'in_preparazione')
-                            return `M${numero} · 🔄 in preparazione`
-    return `M${numero} · ⏳ da preparare`
-  })()
+  // Header status
+  let headerColor = 'text-textSoft'
+  let icon = '⏳'
+  let label = 'DA PREPARARE'
+  if (bloccata) {
+    headerColor = 'text-textMute'; icon = '🔒'
+    label = `IN ATTESA M${numero - 1}`
+  } else if (urgente) {
+    headerColor = 'text-danger'; icon = '🔴'; label = 'URGENTE'
+  } else if (timer?.secondi != null && timer.secondi > 0) {
+    headerColor = 'text-textSoft'; icon = '⏱'
+    label = `${formatCountdownSec(timer.secondi)} al via`
+  } else if (stato === 'in_preparazione') {
+    headerColor = 'text-warning'; icon = '🔄'; label = 'IN PREPARAZIONE'
+  }
+
+  const sourceIcon = categoria === 'cucina' ? '🍳' : '🍺'
 
   const handler = stato === 'in_attesa' ? onInPreparazione : onPronta
-  const btnLabel = stato === 'in_attesa' ? '📋 Da preparare' : '🔄 In preparazione'
-  const btnBg    = stato === 'in_attesa' ? 'bg-blue-700' : 'bg-orange-600'
+  const btnLabel = stato === 'in_attesa' ? '→ In preparazione' : '→ Pronto'
+  const btnBg    = stato === 'in_attesa' ? 'bg-gold text-bg' : 'bg-success text-bg'
   const showBtn  = !disabledByStorno && !bloccata
 
   const renderRiga = ({ nome, q }) => (
-    <li key={nome} className="flex items-start justify-between gap-3 text-lg">
-      <span className="font-semibold flex-1 min-w-0 break-words whitespace-normal">{nome}</span>
-      <span className="font-bold text-xl shrink-0">× {q}</span>
+    <li key={nome}
+        className="flex items-center gap-2.5 px-2.5 py-2 rounded-[10px]
+                   bg-[rgba(196,168,130,0.06)] border border-borderSoft">
+      <span className="min-w-[40px] h-[32px] px-2 rounded-badge inline-flex items-center justify-center
+                       bg-surfaceElev text-text font-extrabold text-[16px] tabular-nums border border-border">
+        {q}×
+      </span>
+      <span className="flex-1 text-[15px] font-semibold break-words text-text">{nome}</span>
     </li>
   )
 
   return (
-    <div className={`border-l-4 ${bordoCls} rounded-r-lg p-2`}>
-      <div className="flex items-center justify-between mb-2 text-xs font-bold uppercase tracking-widest opacity-90">
-        <span>━━ {header} ━━</span>
+    <div className={`relative rounded-card p-3 border-[1.5px] ${borderCls} ${glowCls} ${bgCls}
+                     ${urgente ? 'animate-pulseUrgent' : ''}`}>
+      {/* Header */}
+      <div className="flex items-center justify-between mb-2">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex items-center justify-center w-[30px] h-[30px] rounded-[9px]
+                           bg-surfaceElev border border-border text-base">
+            {sourceIcon}
+          </span>
+          <div>
+            <div className="text-[14px] font-extrabold tracking-[0.4px] text-text">
+              MANDATA {numero}
+              {urgente && (
+                <span className="ml-1.5 text-danger text-[11px] font-extrabold animate-blink">⚡</span>
+              )}
+            </div>
+            <div className={`text-[11px] font-bold uppercase tracking-[0.4px] mt-[1px] ${headerColor}`}>
+              {icon} {label}
+            </div>
+          </div>
+        </div>
       </div>
 
-      <ul className="space-y-1 mb-2">
+      <ul className={`flex flex-col gap-1.5 mb-2 ${bloccata ? 'opacity-55' : ''}`}>
         {categoria === 'cucina'
           ? groupByPortata(aggr, PORTATE_CUCINA).flatMap(g => [
               <li key={`hdr-${g.label}`}
-                  className="text-[10px] uppercase tracking-widest opacity-70 mt-1 first:mt-0">
+                  className="text-[10px] uppercase tracking-[1.2px] font-extrabold text-textMute mt-1 first:mt-0 px-1">
                 — {g.label} —
               </li>,
               ...g.items.map(renderRiga),
@@ -524,7 +573,10 @@ function MandataBlock({ numero, items, categoria, timer, bloccata, disabledBySto
             setBusy(true)
             try { await handler() } finally { setBusy(false) }
           }}
-          className={`${btnBg} text-white w-full rounded-xl py-2 font-bold text-base active:scale-95`}
+          className={`${btnBg} w-full min-h-[50px] rounded-btn py-2 font-extrabold text-[15px]
+                     tracking-[0.4px] shadow-[0_3px_0_#3F2A1F]
+                     active:scale-95 transition-transform
+                     disabled:opacity-50 disabled:active:scale-100`}
         >
           {busy ? 'Aggiornamento…' : btnLabel}
         </button>
@@ -537,17 +589,16 @@ function MandataArchivedBlock({ numero, items }) {
   const stato = getStatoMandataDisplay(items)
   const aggr = useMemo(() => aggregaPerNome(items), [items])
   const consegnata = stato === 'consegnata'
-  const bordoCls = consegnata
-    ? 'border-l-blue-500 bg-blue-900/10 opacity-60'
-    : 'border-l-green-500 bg-green-900/15 opacity-70'
-  const icon = consegnata ? '✅ consegnata' : '✅ Pronto'
+  const bg = consegnata ? 'bg-[rgba(196,168,130,0.06)] border-textMute/40' : 'bg-successSoft border-success/40'
+  const ink = consegnata ? 'text-textMute' : 'text-success'
+  const icon = consegnata ? '✓ Consegnata' : '✅ Pronto'
 
   return (
-    <div className={`border-l-4 ${bordoCls} rounded-r-lg p-2`}>
-      <div className="text-xs font-bold uppercase tracking-widest opacity-90 mb-1">
-        ━━ M{numero} · {icon} ━━
+    <div className={`rounded-card p-3 border-[1.5px] ${bg} opacity-80`}>
+      <div className={`text-[11px] font-extrabold uppercase tracking-[0.4px] mb-1.5 ${ink}`}>
+        MANDATA {numero} · {icon}
       </div>
-      <p className="text-sm break-words">
+      <p className="text-[13px] text-text break-words">
         {aggr.map(a => `${a.nome} ×${a.q}`).join(' · ')}
       </p>
     </div>
@@ -600,30 +651,31 @@ function VistaAggregata({ orders, categoria }) {
     return groupByPortata(aggregated, schema)
   }, [aggregated, categoria])
 
-  const tema = categoria === 'cucina'
-    ? { sepText: 'text-cucina', sepLine: 'bg-cucina/40', badgeBg: 'bg-cucina' }
-    : { sepText: 'text-bar',    sepLine: 'bg-bar/40',    badgeBg: 'bg-bar'    }
-
   if (aggregated.length === 0) {
-    return <p className="text-center text-xl opacity-60 py-12">Nulla da preparare 🎉</p>
+    return (
+      <div className="text-center py-12">
+        <p className="font-display text-[24px] text-text mb-1">Nulla da preparare 🎉</p>
+        <p className="text-textSoft text-[13px] font-semibold">Tutta la coda smaltita</p>
+      </div>
+    )
   }
 
   return (
     <div className="space-y-6">
       {groups.map(g => (
         <section key={g.label}>
-          <h2 className={`flex items-center gap-2 mb-3 text-xs font-bold uppercase
-                          tracking-widest ${tema.sepText} select-none`}>
-            <span className={`flex-1 h-px ${tema.sepLine}`} aria-hidden="true" />
+          <h2 className="flex items-center gap-2 mb-3 text-[11px] font-extrabold uppercase
+                          tracking-[1.4px] text-textSoft select-none">
+            <span className="flex-1 h-px bg-divider" aria-hidden="true" />
             <span>— {g.label} —</span>
-            <span className={`flex-1 h-px ${tema.sepLine}`} aria-hidden="true" />
+            <span className="flex-1 h-px bg-divider" aria-hidden="true" />
           </h2>
           <ul className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3
                          mobile-landscape:grid-cols-2 gap-3">
             {g.items
               .sort((a, b) => (a.ordine - b.ordine) || a.nome_item.localeCompare(b.nome_item))
               .map(p => (
-                <PietanzaCard key={p.nome_item} pietanza={p} badgeBg={tema.badgeBg} />
+                <PietanzaCard key={p.nome_item} pietanza={p} />
               ))}
           </ul>
         </section>
@@ -632,19 +684,19 @@ function VistaAggregata({ orders, categoria }) {
   )
 }
 
-function PietanzaCard({ pietanza, badgeBg }) {
+function PietanzaCard({ pietanza }) {
   return (
-    <li className="card">
+    <li className="bg-surface border border-borderSoft rounded-card p-3 shadow-sm">
       <div className="flex items-start justify-between gap-3 mb-2">
-        <h3 className="text-xl font-bold flex-1 min-w-0 break-words whitespace-normal">
+        <h3 className="text-[18px] font-extrabold text-text flex-1 min-w-0 break-words">
           {pietanza.nome_item}
         </h3>
-        <span className={`${badgeBg} text-white font-bold px-3 py-1 rounded-full
-                          text-sm shrink-0 whitespace-nowrap`}>
+        <span className="bg-gold text-bg font-extrabold px-3 py-1 rounded-phone tabular-nums
+                         text-[13px] shrink-0 whitespace-nowrap shadow-cta">
           TOT: {pietanza.total_qty}
         </span>
       </div>
-      <p className="text-sm opacity-80 break-words">
+      <p className="text-[12.5px] text-textSoft font-semibold break-words">
         {pietanza.byTavolo.map(t => `Tav.${t.tavolo} ×${t.qty}`).join(' · ')}
       </p>
     </li>

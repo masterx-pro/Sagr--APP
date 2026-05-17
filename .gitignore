@@ -12,6 +12,11 @@ dist-ssr
 
 .vercel
 
+# Claude Code workspace state
+.claude/
+# Local design-handoff prototype bundle (riferimento, non da committare)
+.design_handoff/
+
 # Playwright artifacts
 tests/screenshots/
 test-results/

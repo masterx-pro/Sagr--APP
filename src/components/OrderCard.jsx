@@ -1,4 +1,5 @@
 import TableBadge from './TableBadge.jsx'
+import { CreditCard, Banknote, Users, Clock, AlertTriangle } from 'lucide-react'
 
 function formatDataOra(iso) {
   const d = new Date(iso)
@@ -7,31 +8,18 @@ function formatDataOra(iso) {
   return `${data} · ${ora}`
 }
 
-const STATO_COLORI = {
-  bozza:        'bg-gray-600',
-  attesa_cassa: 'bg-amber-600',
-  confermato:   'bg-green-700',
-  stornato:     'bg-red-700',
-  completato:   'bg-blue-700',
-}
-
-const STATO_LABEL = {
-  bozza:        'Bozza',
-  attesa_cassa: '💵 In cassa',
-  confermato:   'Confermato',
-  stornato:     '⚠️ Stornato',
-  completato:   'Completato',
-}
-
-const TIPO_PAGAMENTO_ICON = {
-  bancomat: '💳',
-  contanti: '💵',
+// Mappa stato → token (border-left color + banner)
+const STATO_META = {
+  bozza:        { borderCls: 'border-l-textSoft', bannerCls: 'bg-[rgba(196,168,130,0.14)] text-textSoft', label: 'BOZZA' },
+  attesa_cassa: { borderCls: 'border-l-gold',     bannerCls: 'bg-goldSoft text-gold',                  label: 'ATTESA CASSA' },
+  confermato:   { borderCls: 'border-l-success',  bannerCls: 'bg-successSoft text-success',           label: 'CONFERMATO' },
+  stornato:     { borderCls: 'border-l-danger',   bannerCls: 'bg-dangerSoft text-danger',             label: 'STORNATO' },
+  completato:   { borderCls: 'border-l-info',     bannerCls: 'bg-infoSoft text-info',                 label: 'COMPLETATO' },
 }
 
 /**
- * OrderCard v2: card di riepilogo usata dall'admin.
- * Mostra nome cliente, tipo pagamento, stato nuovo modello e conteggio
- * consegne (basato su mandata_stato === 'consegnata').
+ * OrderCard — card riepilogo usata dall'Admin (dark theme).
+ * Mostra cliente, pagamento, stato, conteggio consegne cucina/bar.
  */
 export default function OrderCard({ order, items = [], onClick, onDelete }) {
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
@@ -39,77 +27,85 @@ export default function OrderCard({ order, items = [], onClick, onDelete }) {
   const cucinaConsegnati = cucinaItems.filter(i => i.mandata_stato === 'consegnata').length
   const barConsegnati    = barItems.filter(i => i.mandata_stato === 'consegnata').length
 
-  const tipoIcon = TIPO_PAGAMENTO_ICON[order.tipo_pagamento]
-  const statoLabel = STATO_LABEL[order.stato] || order.stato
-  const statoColor = STATO_COLORI[order.stato] || 'bg-gray-600'
+  const meta = STATO_META[order.stato] || STATO_META.bozza
+  const isStorno = order.stato === 'stornato'
+  const isContanti = order.tipo_pagamento === 'contanti'
 
   return (
     <div
       onClick={onClick}
-      className="card cursor-pointer active:scale-[0.98] transition-transform"
+      className={`relative cursor-pointer active:scale-[0.98] transition-transform
+                  bg-surface border border-borderSoft border-l-4 ${meta.borderCls}
+                  rounded-card p-3 shadow-sm flex flex-col gap-2.5`}
     >
-      <div className="flex items-start justify-between mb-2 gap-2">
+      {/* row 1: header */}
+      <div className="flex items-start justify-between gap-2">
         <div className="flex flex-col gap-1 min-w-0">
           <div className="flex items-center gap-2 flex-wrap">
             <TableBadge numero={order.numero_tavolo} persone={order.n_persone} />
             {order.nome_cliente && (
-              <span className="text-sm font-semibold opacity-90 truncate max-w-[10rem]">
+              <span className="text-[15px] font-bold truncate max-w-[10rem] text-text">
                 · {order.nome_cliente}
               </span>
             )}
           </div>
           {order.created_at && (
-            <span className="text-xs text-gray-400">
+            <span className="text-xs text-textSoft tabular-nums">
               {formatDataOra(order.created_at)}
             </span>
           )}
           {order.cameriere_nome && (
-            <span className="text-xs text-gray-500 italic">
+            <span className="text-xs text-textMute italic">
               👤 {order.cameriere_nome}
             </span>
           )}
         </div>
         <div className="flex flex-col items-end gap-1 shrink-0">
-          <span className={`badge text-white ${statoColor}`}>
-            {statoLabel}
+          <span className="text-[19px] font-extrabold tabular-nums text-text leading-none">
+            € {Number(order.totale).toFixed(2)}
           </span>
-          {tipoIcon && (
-            <span className="text-xs opacity-80">
-              {tipoIcon} {order.tipo_pagamento}
+          {order.tipo_pagamento && (
+            <span
+              className={`inline-flex items-center gap-1 px-1.5 py-[3px] rounded-badge
+                          text-[10.5px] font-extrabold tracking-wide
+                          ${isContanti
+                            ? 'bg-successSoft text-success'
+                            : 'bg-infoSoft text-info'}`}
+            >
+              {isContanti ? <Banknote size={11} /> : <CreditCard size={11} />}
+              {isContanti ? 'CONT' : 'BANC'}
             </span>
           )}
         </div>
       </div>
 
-      {order.stato === 'stornato' && order.storno_note && (
-        <p className="text-xs bg-red-900/40 border border-red-700 rounded-lg p-2 mb-2 break-words">
+      {isStorno && order.storno_note && (
+        <p className="text-xs bg-dangerSoft border border-danger/40 rounded-badge p-2 break-words text-danger">
+          <AlertTriangle size={12} className="inline mr-1" />
           Storno: {order.storno_note}
         </p>
       )}
 
-      <div className="flex flex-col gap-1 text-sm mb-2">
-        <div>
-          <span className="opacity-70">🍳 Cucina:</span>{' '}
-          <span className="font-semibold">
-            {cucinaConsegnati}/{cucinaItems.length}
-          </span>
-        </div>
-        <div>
-          <span className="opacity-70">🍺 Bar:</span>{' '}
-          <span className="font-semibold">
-            {barConsegnati}/{barItems.length}
-          </span>
-        </div>
+      {/* row 2: progress */}
+      <div className="flex flex-wrap gap-x-4 gap-y-1 text-sm text-textSoft">
+        <span>
+          🍳 <span className="font-bold text-text tabular-nums">{cucinaConsegnati}/{cucinaItems.length}</span>
+        </span>
+        <span>
+          🍺 <span className="font-bold text-text tabular-nums">{barConsegnati}/{barItems.length}</span>
+        </span>
       </div>
 
-      <div className="flex items-center justify-between pt-2 border-t border-bordo">
-        <span className="text-lg font-bold">
-          € {Number(order.totale).toFixed(2)}
-        </span>
+      {/* row 3: banner stato */}
+      <div className={`flex items-center justify-between px-2.5 py-1.5 rounded-[10px]
+                       text-[11px] font-extrabold uppercase tracking-[0.6px]
+                       ${meta.bannerCls}`}>
+        <span>{meta.label}</span>
+        {isStorno && <AlertTriangle size={12} />}
         {onDelete && (
           <button
             onClick={(e) => { e.stopPropagation(); onDelete(order.id) }}
-            className="text-xs px-2 py-1 rounded-lg bg-red-700 text-white"
+            className="px-2 py-0.5 rounded-badge bg-danger text-text text-[10px] font-extrabold uppercase"
           >
             Elimina
           </button>
