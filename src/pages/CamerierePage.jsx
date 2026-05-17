@@ -264,6 +264,7 @@ export default function CamerierePage({ user, onLogout }) {
         title={titleMap[view] || 'Cameriere'}
         subtitle={subtitleMap[view]}
         impostazioni={impostazioni}
+        showBadge={view !== 'new'}
         leftAction={onLeftAction}
         right={
           <>
@@ -946,6 +947,7 @@ function NuovoOrdine({ menu, initialDraft, onProceedToPayment, onRefresh, refres
         items={menu}
         quantities={qty}
         onChange={setQty}
+        stickyTop={110}
         footer={
           <div className="rounded-card border border-border bg-surface p-3 shadow-md">
             <div className="flex items-center justify-between mb-2.5">
@@ -1161,6 +1163,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
           items={menu}
           quantities={qty}
           onChange={setQty}
+          stickyTop={155}
           footer={
             <div className="rounded-card border border-border bg-surface p-3 shadow-md">
               <div className="flex items-center justify-between mb-2.5">
@@ -1442,43 +1445,70 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
   )
 }
 
+// Priorita' display delle sezioni mandata nel dettaglio (basso = piu' in alto).
+//   1. in_finestra      🪟 da portare subito
+//   2. sbloccata        🔴 urgente / da confermare
+//   3. in_preparazione  🔄
+//   4. pre_riscaldo     🟡 (bloccate, in attesa)
+//   5. in_attesa / in_pausa
+//   6. consegnata       ✅ in fondo
+const SEZIONE_PRIORITA = {
+  in_finestra:     1,
+  sbloccata:       2,
+  in_preparazione: 3,
+  pre_riscaldo:    4,
+  in_attesa:       5,
+  in_pausa:        5,
+  consegnata:      6,
+}
+
 function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, onConsegnata, onSblocca }) {
   if (numeri.length === 0) return null
+
+  // Calcola eligibilita' sblocco PRIMA del riordino (la sequenzialita'
+  // dello sblocco dipende dal numero, non dalla priorita' display).
+  const sbloccoMap = {}
+  numeri.forEach((n, idx) => {
+    const prevN = numeri[idx - 1]
+    const prevDone = idx === 0 || (
+      prevN != null && (groups[prevN] || []).every(i =>
+        i.mandata_stato === 'in_finestra' || i.mandata_stato === 'consegnata'
+      )
+    )
+    const haDaSbloccare = (groups[n] || []).some(i =>
+      i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
+    )
+    // M4 bar (caffe'/amari): sblocco SEMPRE manuale. Per altre mandate
+    // bar non mostriamo lo sblocco (parte automaticamente con l'ordine).
+    sbloccoMap[n] = !disabled && haDaSbloccare && prevDone &&
+      (categoria === 'cucina' || (categoria === 'bar' && n === 4))
+  })
+
+  // Ordina per priorita' display: cose pronte/urgenti in alto, consegnate in fondo.
+  const numeriSorted = [...numeri].sort((a, b) => {
+    const pa = SEZIONE_PRIORITA[getStatoMandataDisplay(groups[a])] ?? 5
+    const pb = SEZIONE_PRIORITA[getStatoMandataDisplay(groups[b])] ?? 5
+    if (pa !== pb) return pa - pb
+    return a - b
+  })
+
   return (
     <div>
       <h3 className={`font-extrabold mb-2 text-[13px] uppercase tracking-[1.4px] ${colore}`}>
         {titolo}
       </h3>
       <ul className="flex flex-col gap-2.5">
-        {numeri.map((n, idx) => {
-          // Mandata sbloccabile se M(n-1) e' completamente in_finestra/consegnata
-          // e M(n) ha items in_attesa o pre_riscaldo. Solo per cucina (e M4 bar).
-          const prevN = numeri[idx - 1]
-          const prevDone = idx === 0 || (
-            prevN != null && (groups[prevN] || []).every(i =>
-              i.mandata_stato === 'in_finestra' || i.mandata_stato === 'consegnata'
-            )
-          )
-          const haDaSbloccare = (groups[n] || []).some(i =>
-            i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
-          )
-          // M4 bar (caffe'/amari): sblocco SEMPRE manuale. Per altre mandate
-          // bar non mostriamo lo sblocco (parte automaticamente con l'ordine).
-          const offerSblocco = !disabled && haDaSbloccare && prevDone &&
-            (categoria === 'cucina' || (categoria === 'bar' && n === 4))
-
-          return (
-            <MandataRow
-              key={n}
-              numero={n}
-              items={groups[n]}
-              categoria={categoria}
-              disabled={disabled}
-              onConsegnata={() => onConsegnata(n)}
-              onSblocca={offerSblocco ? () => onSblocca && onSblocca(n) : null}
-            />
-          )
-        })}
+        {numeriSorted.map(n => (
+          <MandataRow
+            key={n}
+            numero={n}
+            items={groups[n]}
+            categoria={categoria}
+            disabled={disabled}
+            onConsegnata={() => onConsegnata(n)}
+            onSblocca={sbloccoMap[n] ? () => onSblocca && onSblocca(n) : null}
+          />
+        ))}
       </ul>
     </div>
   )

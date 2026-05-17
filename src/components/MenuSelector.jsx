@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from '../supabaseClient.js'
 
 /**
@@ -72,15 +72,33 @@ export function flattenQuantities(quantities) {
   return out
 }
 
+// Mapping mandata → target di scroll al cambio tab mandata.
+//   Cucina: M1→Antipasti, M2→Primi, M3→Secondi, M4→Dolci
+//   Bar:    M1→inizio lista bar (null), M4→Caffè. M2/M3: nessuno scroll.
+const SCROLL_TARGET_CUCINA = { 1: 'Antipasti', 2: 'Primi', 3: 'Secondi', 4: 'Dolci' }
+const SCROLL_TARGET_BAR    = { 1: null, 4: 'Caffè' }
+
+// Altezza approx dei tab sticky (mandata + categoria) per scroll-margin-top.
+const STICKY_TABS_HEIGHT_PX = 110
+
 export default function MenuSelector({
   items,
   quantities,
   onChange,
   mandateAbilitate = [1, 2, 3, 4],
   footer = null,
+  // Offset in px da viewport-top per stickare i tab sotto un header esterno
+  // (es. RoleHeader sticky). 0 = stick al top del viewport.
+  stickyTop = 0,
 }) {
   const [mandataAttiva, setMandataAttiva] = useState(mandateAbilitate[0] ?? 1)
   const [tab, setTab] = useState('cucina')
+
+  // Refs ai separatori di sezione (— ANTIPASTI —, — PRIMI —, ecc).
+  // Vengono ricostruiti al cambio tab perche' le sezioni cambiano.
+  const sectionRefs = useRef({})
+  const listRef = useRef(null)
+  useEffect(() => { sectionRefs.current = {} }, [tab])
 
   // Stock realtime: ascolta UPDATE su menu_items per aggiornare i badge
   // "N rimaste" senza ricaricare il menu. Mantiene una mappa locale
@@ -158,55 +176,78 @@ export default function MenuSelector({
     onChange(updated)
   }
 
+  const scrollToTarget = (target) => {
+    // target === null → inizio lista (listRef); stringa → ref del separatore.
+    const el = target === null ? listRef.current : sectionRefs.current[target]
+    if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
+
+  const handleMandataClick = (n) => {
+    setMandataAttiva(n)
+    const map = tab === 'cucina' ? SCROLL_TARGET_CUCINA : SCROLL_TARGET_BAR
+    if (!(n in map)) return // mandata senza target di scroll
+    requestAnimationFrame(() => scrollToTarget(map[n]))
+  }
+
+  const sezioneScrollMarginTop = `${stickyTop + STICKY_TABS_HEIGHT_PX}px`
+
   return (
     <div>
-      {/* Tab mandata */}
-      <div className="flex gap-2 mb-2 sticky top-0 bg-sfondo pt-2 z-20">
-        {[1, 2, 3, 4].map(n => {
-          const active = mandataAttiva === n
-          const count = contoPerMandata[n]
-          const hidden = !mandateAbilitate.includes(n)
-          if (hidden) return null
-          return (
-            <button
-              key={n}
-              type="button"
-              onClick={() => setMandataAttiva(n)}
-              className={`flex-1 min-h-btn rounded-xl font-bold text-sm relative
-                          ${active ? 'bg-cameriere text-white' : 'bg-pannello border border-bordo'}`}
-            >
-              M{n}
-              {count > 0 && (
-                <span className="ml-1 text-xs font-normal opacity-90">· {count}</span>
-              )}
-            </button>
-          )
-        })}
+      {/* Tab mandata + categoria: unico contenitore sticky sotto l'header */}
+      <div
+        className="sticky z-20 bg-sfondo -mx-4 px-4 pt-2 pb-2 mb-3 border-b border-borderSoft"
+        style={{ top: stickyTop }}
+      >
+        <div className="flex gap-2 mb-2">
+          {[1, 2, 3, 4].map(n => {
+            const active = mandataAttiva === n
+            const count = contoPerMandata[n]
+            const hidden = !mandateAbilitate.includes(n)
+            if (hidden) return null
+            return (
+              <button
+                key={n}
+                type="button"
+                onClick={() => handleMandataClick(n)}
+                className={`flex-1 min-h-btn rounded-xl font-bold text-sm relative
+                            ${active ? 'bg-cameriere text-white' : 'bg-pannello border border-bordo'}`}
+              >
+                M{n}
+                {count > 0 && (
+                  <span className="ml-1 text-xs font-normal opacity-90">· {count}</span>
+                )}
+              </button>
+            )
+          })}
+        </div>
+
+        <div className="flex gap-2">
+          <button
+            type="button"
+            onClick={() => setTab('cucina')}
+            className={`flex-1 min-h-btn rounded-xl font-semibold ${
+              tab === 'cucina' ? 'bg-cucina text-white' : 'bg-pannello border border-bordo'
+            }`}
+          >
+            Cucina
+          </button>
+          <button
+            type="button"
+            onClick={() => setTab('bar')}
+            className={`flex-1 min-h-btn rounded-xl font-semibold ${
+              tab === 'bar' ? 'bg-bar text-white' : 'bg-pannello border border-bordo'
+            }`}
+          >
+            Bar
+          </button>
+        </div>
       </div>
 
-      {/* Tab categoria */}
-      <div className="flex gap-2 mb-3 sticky top-[3.25rem] bg-sfondo pt-1 pb-2 z-10">
-        <button
-          type="button"
-          onClick={() => setTab('cucina')}
-          className={`flex-1 min-h-btn rounded-xl font-semibold ${
-            tab === 'cucina' ? 'bg-cucina text-white' : 'bg-pannello border border-bordo'
-          }`}
-        >
-          Cucina
-        </button>
-        <button
-          type="button"
-          onClick={() => setTab('bar')}
-          className={`flex-1 min-h-btn rounded-xl font-semibold ${
-            tab === 'bar' ? 'bg-bar text-white' : 'bg-pannello border border-bordo'
-          }`}
-        >
-          Bar
-        </button>
-      </div>
-
-      <ul className="space-y-2">
+      <ul
+        ref={listRef}
+        style={{ scrollMarginTop: sezioneScrollMarginTop }}
+        className="space-y-2"
+      >
         {itemsCategoria.length === 0 && (
           <li className="text-center opacity-60 py-6">
             Nessuna voce disponibile
@@ -215,6 +256,8 @@ export default function MenuSelector({
         {grouped.flatMap(g => [
           <li
             key={`hdr-${g.label}`}
+            ref={el => { if (el) sectionRefs.current[g.label] = el }}
+            style={{ scrollMarginTop: sezioneScrollMarginTop }}
             className="bg-black/40 border-y border-bordo py-2 text-center
                        text-sm font-bold uppercase tracking-widest opacity-90"
           >
