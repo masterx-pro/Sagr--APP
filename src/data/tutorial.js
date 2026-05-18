@@ -91,14 +91,14 @@ const slidesCameriere = [
   {
     id: 'cam-13',
     immagine: '/guida/cam-13-card-pulsante-riordino.png',
-    titolo: '+ Riordino veloce',
+    titolo: "+ Aggiungi all'ordine",
     descrizione: 'Cliente vuole una bottiglia in più? Tappa il pulsante azzurro sulla card del suo tavolo.',
     evidenzia: { x: 86, y: 88, raggio: 16 },
   },
   {
     id: 'cam-14',
     immagine: '/guida/cam-14-riordino-lista-menu.png',
-    titolo: 'Schermata riordino',
+    titolo: "Aggiungi all'ordine — lista menu",
     descrizione: 'Tutto il menu in una lista unica (cucina e bar). Scorri o usa la barra di ricerca.',
     evidenzia: null,
   },
@@ -112,14 +112,14 @@ const slidesCameriere = [
   {
     id: 'cam-16',
     immagine: '/guida/cam-16-riordino-pagamento.png',
-    titolo: 'Pagamento del riordino',
+    titolo: "Pagamento dell'aggiunta",
     descrizione: 'Stesso flusso di un normale ordine: scegli Bancomat o Contanti.',
     evidenzia: null,
   },
   {
     id: 'cam-17',
     immagine: '/guida/cam-17-riordino-confermato.png',
-    titolo: 'Riordino inviato',
+    titolo: 'Aggiunta inviata',
     descrizione: 'Il riordino parte subito a cucina/bar con il nome del cliente + "(riordino)".',
     evidenzia: null,
   },

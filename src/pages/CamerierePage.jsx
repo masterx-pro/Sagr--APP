@@ -12,6 +12,7 @@ import {
   groupByMandata,
   getNumeriMandata,
   getStatoMandataDisplay,
+  formatCountdownSec,
 } from '../utils/mandateUtils.js'
 
 // -------------------- AUDIO (Web Audio API) --------------------
@@ -61,6 +62,46 @@ function statoCameriereOrdine(items) {
 }
 
 const TICK_MS = 30_000
+
+// -------------------- CHIAMATA AUTOMATICA MANDATE (v7) --------------------
+//
+// Quando l'admin attiva chiamata_automatica_attiva='true' (vedi
+// migration_v7.sql), dopo la consegna di M(N) il sistema sblocca da
+// solo M(N+1) trascorsi `chiamata_auto_mN_min` minuti. Il timer di
+// scadenza per ogni (orderId, N) e' memorizzato in localStorage cosi'
+// e' resiliente ai refresh della pagina.
+
+const autoSbloccoKey = (orderId, n) => `auto_sblocco_${orderId}_M${n}`
+
+function isChiamataAutomaticaAttiva(impostazioni) {
+  return impostazioni?.chiamata_automatica_attiva === 'true'
+}
+
+// Minuti configurati per lo sblocco automatico di M(N+1) dopo M(N).
+// Default conservativi se l'impostazione manca.
+function getChiamataAutoMinuti(n, impostazioni) {
+  const raw = impostazioni?.[`chiamata_auto_m${n}_min`]
+  const v = Number(raw)
+  if (Number.isFinite(v) && v > 0) return v
+  if (n === 1) return 15
+  if (n === 2) return 20
+  if (n === 3) return 15
+  return 15
+}
+
+// Restituisce il timestamp piu' recente di consegna per i N items in
+// input — solo se TUTTI sono consegnati. Null altrimenti.
+function maxConsegnataAt(itemsMandata) {
+  if (!itemsMandata?.length) return null
+  if (!itemsMandata.every(i => i.mandata_stato === 'consegnata')) return null
+  const ts = itemsMandata
+    .map(i => i.mandata_consegnata_at)
+    .filter(Boolean)
+    .map(s => new Date(s).getTime())
+    .filter(t => Number.isFinite(t))
+  if (!ts.length) return null
+  return Math.max(...ts)
+}
 
 // -------------------- CAMERIERE PAGE --------------------
 
@@ -171,6 +212,118 @@ export default function CamerierePage({ user, onLogout }) {
     return () => clearInterval(t)
   }, [])
 
+  // Chiamata automatica mandate (v7): scrive in localStorage le scadenze
+  // per ogni mandata consegnata e poi sblocca M(N+1) quando scade.
+  // Eseguito ad ogni cambio di `orders` (cosi' partono nuovi timer non
+  // appena marchi M(N) consegnata) e a un interval di 30s.
+  const chiamataAutoAttiva = isChiamataAutomaticaAttiva(impostazioni)
+
+  // Versione che bumpa al cambio del localStorage cosi' i countdown in
+  // lista si aggiornano alla scrittura/cancellazione delle scadenze.
+  const [autoSbloccoVersion, setAutoSbloccoVersion] = useState(0)
+
+  const aggiornaScadenzeAuto = useCallback(() => {
+    if (!chiamataAutoAttiva) return false
+    let mutato = false
+    for (const o of orders) {
+      if (o.stato !== 'confermato') continue
+      const items = o.order_items || []
+      for (const n of [1, 2, 3]) {
+        const itemsN = items.filter(i => i.mandata === n)
+        if (itemsN.length === 0) continue
+        const itemsNext = items.filter(i => i.mandata === n + 1)
+        if (itemsNext.length === 0) continue
+
+        const key = autoSbloccoKey(o.id, n)
+        const nextDaSbloccare = itemsNext.some(i =>
+          i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
+        )
+        if (!nextDaSbloccare) {
+          if (localStorage.getItem(key) != null) {
+            localStorage.removeItem(key)
+            mutato = true
+          }
+          continue
+        }
+        const baseTs = maxConsegnataAt(itemsN)
+        if (baseTs == null) continue
+        const scadenza = baseTs + getChiamataAutoMinuti(n, impostazioni) * 60_000
+        const cur = localStorage.getItem(key)
+        if (cur == null || Number(cur) !== scadenza) {
+          localStorage.setItem(key, String(scadenza))
+          mutato = true
+        }
+      }
+    }
+    return mutato
+  }, [orders, impostazioni, chiamataAutoAttiva])
+
+  useEffect(() => {
+    if (aggiornaScadenzeAuto()) setAutoSbloccoVersion(v => v + 1)
+  }, [aggiornaScadenzeAuto])
+
+  // Interval: ogni 30s controlla se qualche timer e' scaduto e
+  // sblocca automaticamente la mandata successiva.
+  const ordersRef = useRef(orders)
+  useEffect(() => { ordersRef.current = orders }, [orders])
+
+  useEffect(() => {
+    if (!chiamataAutoAttiva) return
+    let cancelled = false
+
+    const tick = async () => {
+      const now = Date.now()
+      const list = ordersRef.current || []
+      let didSomething = false
+      for (const o of list) {
+        if (o.stato !== 'confermato') continue
+        for (const n of [1, 2, 3]) {
+          const key = autoSbloccoKey(o.id, n)
+          const raw = localStorage.getItem(key)
+          if (!raw) continue
+          const scadenza = Number(raw)
+          if (!Number.isFinite(scadenza)) { localStorage.removeItem(key); continue }
+          if (now < scadenza) continue
+          try {
+            await sbloccaMandata(o.id, n + 1)
+            localStorage.removeItem(key)
+            didSomething = true
+          } catch (e) {
+            console.warn('Auto-sblocco fallito', { orderId: o.id, mandata: n + 1 }, e)
+          }
+        }
+      }
+      if (didSomething && !cancelled) {
+        setAutoSbloccoVersion(v => v + 1)
+        await refetchOrders()
+      }
+    }
+
+    tick()
+    const iv = setInterval(tick, 30_000)
+    return () => { cancelled = true; clearInterval(iv) }
+  }, [chiamataAutoAttiva, sbloccaMandata, refetchOrders])
+
+  // Mappa orderId -> { mandataNext: scadenzaTs }. Letta da localStorage,
+  // utile a card lista (countdown grigio) e dettaglio (override).
+  const autoSbloccoMap = useMemo(() => {
+    const m = new Map()
+    if (!chiamataAutoAttiva) return m
+    for (const o of orders) {
+      const per = {}
+      for (const n of [1, 2, 3]) {
+        const raw = localStorage.getItem(autoSbloccoKey(o.id, n))
+        if (!raw) continue
+        const ts = Number(raw)
+        if (!Number.isFinite(ts)) continue
+        per[n + 1] = ts
+      }
+      if (Object.keys(per).length > 0) m.set(o.id, per)
+    }
+    return m
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, chiamataAutoAttiva, autoSbloccoVersion])
+
   // Protezioni navigazione
   useEffect(() => {
     if (view !== 'new' && view !== 'payment' && view !== 'riordino') return
@@ -249,7 +402,7 @@ export default function CamerierePage({ user, onLogout }) {
   const titleMap = {
     list:     'Mappa tavoli',
     new:      'Nuovo ordine',
-    riordino: 'Riordino rapido',
+    riordino: "Aggiungi all'ordine",
     payment:  'Pagamento',
     detail:   'Dettaglio',
   }
@@ -291,11 +444,16 @@ export default function CamerierePage({ user, onLogout }) {
         {view === 'list' && (
           <ListaTavoli
             orders={orders}
+            chiamataAutoAttiva={chiamataAutoAttiva}
+            autoSbloccoMap={autoSbloccoMap}
             onNew={() => setView('new')}
             onSelect={(id) => { setSelectedId(id); setView('detail') }}
             onSblocca={async (orderId, mandataNum) => {
               try {
                 await sbloccaMandata(orderId, mandataNum)
+                // Pulisci eventuale chiave auto residua per questo sblocco
+                localStorage.removeItem(autoSbloccoKey(orderId, mandataNum - 1))
+                setAutoSbloccoVersion(v => v + 1)
                 await refetchOrders()
               } catch (e) {
                 alert('Errore sblocco mandata: ' + (e.message || e))
@@ -315,6 +473,10 @@ export default function CamerierePage({ user, onLogout }) {
             }}
             onConfermaBancomat={async (orderId) => {
               await confermaPagamentoBancomat(orderId)
+              await refetchOrders()
+            }}
+            onConsegnata={async (orderId, mandataNum, categoria) => {
+              await marcaConsegnata(orderId, mandataNum, categoria)
               await refetchOrders()
             }}
           />
@@ -377,7 +539,7 @@ export default function CamerierePage({ user, onLogout }) {
                 setIsRiordino(false)
                 setView('list')
                 if (pagamento === 'contanti') {
-                  const prefix = eraRiordino ? 'Riordino in cassa:\n' : 'Invia il cliente in cassa con:\n'
+                  const prefix = eraRiordino ? "Aggiunta all'ordine in cassa:\n" : 'Invia il cliente in cassa con:\n'
                   alert(`${prefix}Tav. ${draft.tavolo} · ${draft.nomeCliente}`)
                 } else if (pagamento === 'bancomat') {
                   alert(
@@ -396,6 +558,8 @@ export default function CamerierePage({ user, onLogout }) {
           <DettaglioOrdine
             orderId={selectedId}
             menu={menu}
+            chiamataAutoAttiva={chiamataAutoAttiva}
+            autoSbloccoPerMandata={autoSbloccoMap.get(selectedId) || {}}
             onAddItems={async (items, opts) => {
               await addItemsToOrder(selectedId, items, opts)
               await refetchOrders()
@@ -406,6 +570,9 @@ export default function CamerierePage({ user, onLogout }) {
             }}
             onSbloccaMandata={async (mandataNum) => {
               await sbloccaMandata(selectedId, mandataNum)
+              // Forza override: cancella eventuale timer auto e bumpa la version
+              localStorage.removeItem(autoSbloccoKey(selectedId, mandataNum - 1))
+              setAutoSbloccoVersion(v => v + 1)
               await refetchOrders()
             }}
             onInviaM4={async () => {
@@ -431,7 +598,7 @@ export default function CamerierePage({ user, onLogout }) {
 
 // -------------------- LISTA TAVOLI --------------------
 
-function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca, onConfermaBancomat }) {
+function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca, onConfermaBancomat, onConsegnata, chiamataAutoAttiva, autoSbloccoMap }) {
   const [filtro, setFiltro] = useState('tutti') // 'tutti' | 'pronti' | 'attivi' | 'daPagare'
 
   const pronti    = []
@@ -541,6 +708,9 @@ function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca, onConferm
             onRiordino={onRiordino}
             onSblocca={onSblocca}
             onConfermaBancomat={onConfermaBancomat}
+            onConsegnata={onConsegnata}
+            chiamataAutoAttiva={chiamataAutoAttiva}
+            autoSbloccoPerMandata={(autoSbloccoMap && autoSbloccoMap.get(o.id)) || {}}
           />
         ))}
       </ul>
@@ -600,7 +770,7 @@ function metaStatoOrdine(order, items) {
     return {
       borderCls: 'border-l-gold',
       bannerCls: 'bg-goldSoft text-gold',
-      label: 'ATTESA CASSA',
+      label: '💵 ATTESA CASSA',
       pulseBanner: false,
     }
   }
@@ -608,7 +778,7 @@ function metaStatoOrdine(order, items) {
     return {
       borderCls: 'border-l-info',
       bannerCls: 'bg-infoSoft text-info',
-      label: 'PAGAMENTO BANCOMAT',
+      label: '💳 PAGAMENTO BANCOMAT',
       pulseBanner: true,
     }
   }
@@ -617,7 +787,7 @@ function metaStatoOrdine(order, items) {
     return {
       borderCls: 'border-l-success',
       bannerCls: 'bg-successSoft text-success',
-      label: 'PRONTI DA PORTARE',
+      label: '🟢 PRONTI DA PORTARE',
       pulseBanner: true,
     }
   }
@@ -625,7 +795,7 @@ function metaStatoOrdine(order, items) {
     return {
       borderCls: 'border-l-textMute',
       bannerCls: 'bg-[rgba(196,168,130,0.08)] text-textMute',
-      label: 'CONCLUSO',
+      label: '✅ COMPLETATO',
       pulseBanner: false,
     }
   }
@@ -634,34 +804,24 @@ function metaStatoOrdine(order, items) {
     return {
       borderCls: 'border-l-danger',
       bannerCls: 'bg-dangerSoft text-danger',
-      label: 'URGENTE · ESCI SUBITO',
+      label: '🔴 URGENTE · ESCI SUBITO',
       pulseBanner: true,
     }
   }
-  const partial = items.some(i =>
-    i.mandata_stato === 'in_preparazione' || i.mandata_stato === 'in_finestra'
-  )
-  if (partial) {
+  const inCorso = items.some(i => i.mandata_stato === 'in_preparazione')
+  if (inCorso) {
     return {
       borderCls: 'border-l-warning',
       bannerCls: 'bg-warningSoft text-warning',
-      label: 'IN PREPARAZIONE',
+      label: '🟡 IN CORSO',
       pulseBanner: false,
     }
   }
-  const preRiscaldo = items.some(i => i.mandata_stato === 'pre_riscaldo')
-  if (preRiscaldo) {
-    return {
-      borderCls: 'border-l-warning',
-      bannerCls: 'bg-warningSoft text-warning',
-      label: 'PRE-RISCALDO',
-      pulseBanner: false,
-    }
-  }
+  // pre_riscaldo e' info interna alla cucina: per il cameriere = IN ATTESA.
   return {
     borderCls: 'border-l-textSoft',
     bannerCls: 'bg-[rgba(196,168,130,0.14)] text-textSoft',
-    label: 'IN ATTESA',
+    label: '⏳ IN ATTESA',
     pulseBanner: false,
   }
 }
@@ -676,6 +836,52 @@ function statoMandataToIndicator(stato) {
   if (stato === 'pre_riscaldo')     return 'pre_riscaldo'
   if (stato === 'in_pausa')         return 'in_pausa'
   return 'in_attesa'
+}
+
+// Variante per la card lista: la mandata successiva si "sblocca" SOLO
+// quando tutta la precedente e' CONSEGNATA (non basta in_finestra), in
+// modo che il cameriere prima porti al tavolo M(N-1) — premendo i
+// pulsanti "Ho portato MX cucina/bar" — e POI veda apparire il pulsante
+// "Esci con MN". Stessa firma di prossimaMandataSbloccabile.
+function prossimaMandataSbloccabileLista(items) {
+  const cucinaGroups = groupByMandata((items || []).filter(i => i.categoria === 'cucina'))
+  const barGroups    = groupByMandata((items || []).filter(i => i.categoria === 'bar'))
+
+  const numeri = [1, 2, 3, 4].filter(n => cucinaGroups[n] || barGroups[n])
+  for (const n of numeri) {
+    const itemsN = [...(cucinaGroups[n] || []), ...(barGroups[n] || [])]
+    const haNonSbloccata = itemsN.some(i =>
+      i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'
+    )
+    if (!haNonSbloccata) continue
+
+    if (n > 1) {
+      const itemsPrev = [...(cucinaGroups[n - 1] || []), ...(barGroups[n - 1] || [])]
+      if (itemsPrev.length > 0) {
+        // Stretta: nessun item della mandata precedente puo' essere ancora
+        // in_finestra (il cameriere deve averli portati al tavolo).
+        const prevTuttaConsegnata = itemsPrev.every(i => i.mandata_stato === 'consegnata')
+        if (!prevTuttaConsegnata) continue
+      }
+    }
+    return n
+  }
+  return null
+}
+
+// Restituisce le coppie (mandataNum, categoria) attualmente in_finestra,
+// usate per generare i pulsanti "Ho portato MX cucina/bar al tavolo".
+function getConsegneInFinestra(items) {
+  const out = []
+  for (const n of [1, 2, 3, 4]) {
+    if ((items || []).some(i =>
+      i.mandata === n && i.categoria === 'cucina' && i.mandata_stato === 'in_finestra'
+    )) out.push({ mandataNum: n, categoria: 'cucina' })
+    if ((items || []).some(i =>
+      i.mandata === n && i.categoria === 'bar' && i.mandata_stato === 'in_finestra'
+    )) out.push({ mandataNum: n, categoria: 'bar' })
+  }
+  return out
 }
 
 // Restituisce il numero della prossima mandata cucina sbloccabile
@@ -710,7 +916,7 @@ function prossimaMandataSbloccabile(items) {
   return null
 }
 
-function CompactOrderCard({ order, onSelect, onRiordino, onSblocca, onConfermaBancomat }) {
+function CompactOrderCard({ order, onSelect, onRiordino, onSblocca, onConfermaBancomat, onConsegnata, chiamataAutoAttiva, autoSbloccoPerMandata }) {
   const items = order.order_items || []
   const cucinaItems = items.filter(i => i.categoria === 'cucina')
   const barItems    = items.filter(i => i.categoria === 'bar')
@@ -723,8 +929,11 @@ function CompactOrderCard({ order, onSelect, onRiordino, onSblocca, onConfermaBa
   const meta = metaStatoOrdine(order, items)
   const isContanti = order.tipo_pagamento === 'contanti'
 
+  // Usa la variante stretta: "Esci con M(N)" appare SOLO quando M(N-1)
+  // e' completamente consegnata. Cosi' i pulsanti "Ho portato MX" hanno
+  // priorita' sullo sblocco della mandata successiva.
   const prossimaSblocco = order.stato === 'confermato'
-    ? prossimaMandataSbloccabile(items)
+    ? prossimaMandataSbloccabileLista(items)
     : null
 
   // Feedback locale per il pulsante "Pagamento effettuato" (1s verde dopo OK).
@@ -748,6 +957,37 @@ function CompactOrderCard({ order, onSelect, onRiordino, onSblocca, onConfermaBa
       alert('Errore: ' + (err.message || err))
     } finally {
       setBusyBancomat(false)
+    }
+  }
+
+  // Pulsanti consegna separati per (categoria, mandata) in_finestra.
+  // `justDelivered` mantiene visibile per 1.5s il feedback "✓ Consegnata!"
+  // anche dopo che i dati sono refreshati (l'item non e' piu' in_finestra).
+  const [busyDelivery, setBusyDelivery] = useState(false)
+  const [justDelivered, setJustDelivered] = useState(null) // { mandataNum, categoria }
+
+  const consegne = getConsegneInFinestra(items)
+  const renderedConsegne = consegne.map(c => ({ ...c }))
+  if (justDelivered) {
+    const idx = renderedConsegne.findIndex(c =>
+      c.categoria === justDelivered.categoria && c.mandataNum === justDelivered.mandataNum
+    )
+    if (idx >= 0) renderedConsegne[idx].feedback = true
+    else renderedConsegne.push({ ...justDelivered, feedback: true })
+  }
+
+  const handleConsegna = async (e, c) => {
+    e.stopPropagation()
+    if (busyDelivery || !onConsegnata) return
+    setBusyDelivery(true)
+    try {
+      await onConsegnata(order.id, c.mandataNum, c.categoria)
+      setJustDelivered({ mandataNum: c.mandataNum, categoria: c.categoria })
+      setTimeout(() => setJustDelivered(null), 1500)
+    } catch (err) {
+      alert('Errore: ' + (err.message || err))
+    } finally {
+      setBusyDelivery(false)
     }
   }
 
@@ -826,9 +1066,9 @@ function CompactOrderCard({ order, onSelect, onRiordino, onSblocca, onConfermaBa
         </div>
       )}
 
-      {/* row 3: banner stato — diventa pulsante "Pagamento effettuato"
-          quando l'ordine e' in attesa di conferma bancomat. */}
-      {showBancomatBtn ? (
+      {/* In attesa di conferma bancomat: pulsante unico al posto di banner
+          / consegna / sblocco / aggiungi. */}
+      {showBancomatBtn && (
         <button
           type="button"
           disabled={busyBancomat || bancomatConfirmed}
@@ -845,47 +1085,128 @@ function CompactOrderCard({ order, onSelect, onRiordino, onSblocca, onConfermaBa
             ? '✓ Confermato!'
             : (busyBancomat ? 'Conferma…' : '💳 Pagamento effettuato →')}
         </button>
-      ) : (
-        <div className={`flex items-center justify-between px-2.5 py-1.5 rounded-[10px]
-                         text-[11px] font-extrabold uppercase tracking-[0.6px] ${meta.bannerCls}`}>
-          <span className="inline-flex items-center gap-1.5">
-            {meta.pulseBanner && (
-              <span className="relative inline-block w-2 h-2">
-                <span className="absolute inset-0 rounded-full bg-current animate-pulseDot" />
-                <span className="relative inline-block w-2 h-2 rounded-full bg-current" />
-              </span>
-            )}
-            {meta.label}
-          </span>
+      )}
+
+      {!showBancomatBtn && (
+        <>
+          {/* Pulsanti consegna separati per ogni (categoria, mandata) in_finestra.
+              Feedback giallo "✓ Consegnata!" per 1.5s dopo il click. */}
+          {renderedConsegne.map(c => {
+            const key = `${c.categoria}-${c.mandataNum}`
+            const label = c.categoria === 'cucina' ? 'cucina' : 'bar'
+            return (
+              <button
+                key={key}
+                type="button"
+                disabled={c.feedback || busyDelivery}
+                onClick={(e) => handleConsegna(e, c)}
+                className={`w-full min-h-[48px] rounded-btn font-extrabold text-[14px] tracking-[0.3px]
+                            active:scale-95 transition-transform inline-flex items-center justify-center gap-2
+                            disabled:active:scale-100
+                            ${c.feedback
+                              ? 'bg-warning text-bg'
+                              : 'bg-success text-bg shadow-[0_3px_0_#3F2A1F]'}`}
+              >
+                {c.feedback
+                  ? '✓ Consegnata!'
+                  : `✅ Ho portato M${c.mandataNum} ${label} al tavolo`}
+              </button>
+            )
+          })}
+
+          {/* Pulsante sblocco mandata successiva. Visibile SOLO quando la
+              mandata precedente e' interamente consegnata (vedi
+              prossimaMandataSbloccabileLista). Se la chiamata automatica
+              e' attiva e il timer non e' ancora scaduto, il pulsante e'
+              grigio con countdown e non cliccabile (l'override resta
+              disponibile dal dettaglio). */}
+          {prossimaSblocco != null && onSblocca && (
+            <SbloccoPulsante
+              order={order}
+              prossimaSblocco={prossimaSblocco}
+              chiamataAutoAttiva={chiamataAutoAttiva}
+              autoScadenza={autoSbloccoPerMandata?.[prossimaSblocco] ?? null}
+              onSblocca={onSblocca}
+            />
+          )}
+
+          {/* Banner stato (PRONTI DA PORTARE / IN CORSO / IN ATTESA / ecc) */}
+          <div className={`flex items-center justify-center px-2.5 py-1.5 rounded-[10px]
+                           text-[11px] font-extrabold uppercase tracking-[0.6px] ${meta.bannerCls}`}>
+            <span className="inline-flex items-center gap-1.5">
+              {meta.pulseBanner && (
+                <span className="relative inline-block w-2 h-2">
+                  <span className="absolute inset-0 rounded-full bg-current animate-pulseDot" />
+                  <span className="relative inline-block w-2 h-2 rounded-full bg-current" />
+                </span>
+              )}
+              {meta.label}
+            </span>
+          </div>
+
+          {/* Pulsante "+ Aggiungi all'ordine" (solo se l'ordine e' confermato) */}
           {onRiordino && order.stato === 'confermato' && (
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); onRiordino(order) }}
-              className="px-2 py-0.5 rounded-badge bg-info/30 text-info text-[10px]
-                         font-extrabold uppercase active:scale-95"
-              title="Aggiungi un riordino veloce"
+              className="w-full min-h-[44px] rounded-btn border border-info/50 bg-infoSoft text-info
+                         font-extrabold text-[13px] uppercase tracking-[0.4px]
+                         active:scale-95 transition-transform"
+              title="Aggiungi voci all'ordine"
             >
-              + Riordino
+              + Aggiungi all'ordine
             </button>
           )}
-        </div>
-      )}
-
-      {/* row 4: pulsante sblocco mandata successiva (v5) */}
-      {prossimaSblocco != null && onSblocca && (
-        <button
-          type="button"
-          onClick={(e) => { e.stopPropagation(); onSblocca(order.id, prossimaSblocco) }}
-          className="w-full min-h-[48px] rounded-btn font-extrabold text-[15px] tracking-[0.3px]
-                     bg-gradient-to-br from-gold to-goldDeep text-bg shadow-cta
-                     active:scale-95 transition-transform inline-flex items-center justify-center gap-2"
-        >
-          {prossimaSblocco === 4
-            ? '☕ Sblocca M4 (dolci · caffè · amari) →'
-            : `🍽️ Esci con M${prossimaSblocco} →`}
-        </button>
+        </>
       )}
     </li>
+  )
+}
+
+// Pulsante "Esci con MX" della card lista. Quando la chiamata automatica
+// e' attiva E c'e' una scadenza futura, mostra countdown e non e' cliccabile:
+// il cameriere deve aspettare l'auto-sblocco oppure forzare dal dettaglio.
+function SbloccoPulsante({ order, prossimaSblocco, chiamataAutoAttiva, autoScadenza, onSblocca }) {
+  const inAuto = chiamataAutoAttiva && autoScadenza != null && autoScadenza > Date.now()
+
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!inAuto) return
+    const iv = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(iv)
+  }, [inAuto])
+
+  const secondsLeft = inAuto ? Math.max(0, Math.floor((autoScadenza - now) / 1000)) : 0
+  const baseLabel = prossimaSblocco === 4
+    ? '☕ Sblocca M4 (dolci · caffè · amari)'
+    : `🍽️ Esci con M${prossimaSblocco}`
+
+  if (inAuto) {
+    return (
+      <button
+        type="button"
+        disabled
+        onClick={(e) => e.stopPropagation()}
+        className="w-full min-h-[48px] rounded-btn font-extrabold text-[14px] tracking-[0.3px]
+                   bg-surfaceElev text-textSoft border border-borderSoft
+                   inline-flex items-center justify-center gap-2 cursor-not-allowed"
+        title="Sblocco automatico programmato — puoi forzare dal dettaglio"
+      >
+        {baseLabel} · {formatCountdownSec(secondsLeft)}
+      </button>
+    )
+  }
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.stopPropagation(); onSblocca(order.id, prossimaSblocco) }}
+      className="w-full min-h-[48px] rounded-btn font-extrabold text-[15px] tracking-[0.3px]
+                 bg-gradient-to-br from-gold to-goldDeep text-bg shadow-cta
+                 active:scale-95 transition-transform inline-flex items-center justify-center gap-2"
+    >
+      {baseLabel} →
+    </button>
   )
 }
 
@@ -1158,7 +1479,7 @@ function ScegliPagamento({ draft, menu, onBack, onConfirm }) {
 
 // -------------------- DETTAGLIO ORDINE --------------------
 
-function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaMandata, onInviaM4, onStorna, onConfermaBancomat }) {
+function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbloccaMandata, onInviaM4, onStorna, onConfermaBancomat, chiamataAutoAttiva, autoSbloccoPerMandata }) {
   const [order, setOrder] = useState(null)
   // adding: null | true (M4 e' libera dalla creazione, non serve modalita' separata)
   const [adding, setAdding] = useState(false)
@@ -1421,6 +1742,8 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         disabled={azioniBloccate}
         onConsegnata={(n) => onMandataConsegnata(n, 'cucina')}
         onSblocca={onSbloccaMandata}
+        chiamataAutoAttiva={chiamataAutoAttiva}
+        autoSbloccoPerMandata={autoSbloccoPerMandata}
       />
 
       {/* Bar */}
@@ -1433,6 +1756,8 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
         disabled={azioniBloccate}
         onConsegnata={(n) => onMandataConsegnata(n, 'bar')}
         onSblocca={onSbloccaMandata}
+        chiamataAutoAttiva={chiamataAutoAttiva}
+        autoSbloccoPerMandata={autoSbloccoPerMandata}
       />
 
       {puoInviareM4 && (
@@ -1463,7 +1788,7 @@ function DettaglioOrdine({ orderId, menu, onAddItems, onMandataConsegnata, onSbl
           disabled={busy}
           className="w-full min-h-btn rounded-btn border border-info/50 bg-infoSoft text-info
                      font-extrabold active:scale-95 transition-transform">
-          + Riordino
+          + Aggiungi all'ordine
         </button>
       )}
 
@@ -1511,7 +1836,7 @@ const SEZIONE_PRIORITA = {
   consegnata:      6,
 }
 
-function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, onConsegnata, onSblocca }) {
+function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, onConsegnata, onSblocca, chiamataAutoAttiva, autoSbloccoPerMandata }) {
   if (numeri.length === 0) return null
 
   // Calcola eligibilita' sblocco PRIMA del riordino (la sequenzialita'
@@ -1556,6 +1881,8 @@ function SezioneMandate({ titolo, colore, numeri, groups, categoria, disabled, o
             disabled={disabled}
             onConsegnata={() => onConsegnata(n)}
             onSblocca={sbloccoMap[n] ? () => onSblocca && onSblocca(n) : null}
+            chiamataAutoAttiva={chiamataAutoAttiva}
+            autoSbloccoScadenza={autoSbloccoPerMandata?.[n] ?? null}
           />
         ))}
       </ul>
@@ -1573,7 +1900,7 @@ const MANDATA_ROW_META = {
   in_pausa:        { borderCls: 'border-danger',     textCls: 'text-danger',    icon: '⏸',  label: 'IN PAUSA' },
 }
 
-function MandataRow({ numero, items, categoria, disabled, onConsegnata, onSblocca }) {
+function MandataRow({ numero, items, categoria, disabled, onConsegnata, onSblocca, chiamataAutoAttiva, autoSbloccoScadenza }) {
   const stato = getStatoMandataDisplay(items)
   const [busy, setBusy] = useState(false)
   const meta = MANDATA_ROW_META[stato] || MANDATA_ROW_META.in_attesa
@@ -1581,6 +1908,20 @@ function MandataRow({ numero, items, categoria, disabled, onConsegnata, onSblocc
   const isUrgente = stato === 'sbloccata'
   const isCollapsed = stato === 'consegnata'
   const sourceIcon = categoria === 'cucina' ? '🍳' : '🍺'
+
+  // Chiamata automatica: se attiva e c'e' una scadenza futura per questa
+  // mandata, il pulsante diventa "Forza uscita MN (auto tra MM:SS)" e
+  // chiede conferma prima dello sblocco anticipato.
+  const inAutoCountdown = chiamataAutoAttiva && autoSbloccoScadenza != null && autoSbloccoScadenza > Date.now()
+  const [now, setNow] = useState(Date.now())
+  useEffect(() => {
+    if (!inAutoCountdown) return
+    const iv = setInterval(() => setNow(Date.now()), 1000)
+    return () => clearInterval(iv)
+  }, [inAutoCountdown])
+  const secondsLeftAuto = inAutoCountdown
+    ? Math.max(0, Math.floor((autoSbloccoScadenza - now) / 1000))
+    : 0
 
   return (
     <li className={`relative rounded-card p-3 border-[1.5px] ${meta.borderCls} bg-surface shadow-sm
@@ -1627,19 +1968,31 @@ function MandataRow({ numero, items, categoria, disabled, onConsegnata, onSblocc
         </p>
       )}
 
-      {/* CTA: Sblocca (se applicabile) */}
+      {/* CTA: Sblocca (se applicabile). Dal dettaglio il cameriere puo'
+          sempre forzare anche con chiamata automatica attiva — chiede conferma. */}
       {!disabled && onSblocca && (
         <button
           disabled={busy}
           onClick={async () => {
+            if (inAutoCountdown) {
+              const ok = window.confirm(
+                `Vuoi anticipare l'uscita di M${numero}?\n` +
+                `Il timer automatico (${formatCountdownSec(secondsLeftAuto)}) verrà annullato.`
+              )
+              if (!ok) return
+            }
             setBusy(true)
             try { await onSblocca() } finally { setBusy(false) }
           }}
-          className="w-full mt-2.5 min-h-[48px] rounded-btn font-extrabold text-[14px] tracking-[0.3px]
-                     bg-gradient-to-br from-gold to-goldDeep text-bg shadow-cta
-                     active:scale-95 transition-transform inline-flex items-center justify-center gap-2"
+          className={`w-full mt-2.5 min-h-[48px] rounded-btn font-extrabold text-[14px] tracking-[0.3px]
+                      inline-flex items-center justify-center gap-2 active:scale-95 transition-transform
+                      ${inAutoCountdown
+                        ? 'bg-surfaceElev text-text border border-gold/60'
+                        : 'bg-gradient-to-br from-gold to-goldDeep text-bg shadow-cta'}`}
         >
-          {numero === 4 ? '☕ Sblocca M4 →' : `🍽️ Esci con M${numero} →`}
+          {inAutoCountdown
+            ? `⚡ Forza uscita M${numero} (auto tra ${formatCountdownSec(secondsLeftAuto)})`
+            : (numero === 4 ? '☕ Sblocca M4 →' : `🍽️ Esci con M${numero} →`)}
         </button>
       )}
 
@@ -1780,7 +2133,7 @@ function RiordinoRapido({ menu, draft, onProceedToPayment, onRefresh, refreshing
       <div className="flex items-center justify-between mb-3">
         <div className="min-w-0">
           <h2 className="text-lg font-bold truncate">
-            Riordino — Tav. {draft?.tavolo}
+            Aggiungi all'ordine — Tav. {draft?.tavolo}
           </h2>
           <p className="text-sm opacity-80 truncate">{draft?.nomeCliente}</p>
         </div>

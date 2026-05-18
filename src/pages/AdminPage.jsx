@@ -1130,6 +1130,16 @@ const FASCE = [
   { id: 'cena',      label: '🌙 Cena'      },
 ]
 
+// Chiamata automatica mandate (v7): quando attiva, dopo la consegna di
+// MX il sistema sblocca da solo M(X+1) trascorsi i minuti configurati.
+// Il pulsante "Esci con MX+1" in lista appare con countdown e non e'
+// cliccabile; dal dettaglio resta possibile forzare l'uscita.
+const CHIAVI_CHIAMATA_AUTO = [
+  { chiave: 'chiamata_auto_m1_min', label: '⏱️ Dopo consegna M1 → sblocca M2 dopo (min)' },
+  { chiave: 'chiamata_auto_m2_min', label: '⏱️ Dopo consegna M2 → sblocca M3 dopo (min)' },
+  { chiave: 'chiamata_auto_m3_min', label: '⏱️ Dopo consegna M3 → sblocca M4 dopo (min)' },
+]
+
 function TabImpostazioni() {
   const { fetchImpostazioni, saveImpostazione } = useOrders()
   const [valori, setValori] = useState({})
@@ -1202,6 +1212,16 @@ function TabImpostazioni() {
             setValori={setValori}
             originali={originali}
             onSalva={() => salvaChiavi(CHIAVI_PRE_RISCALDO.map(c => c.chiave), 'timer pre-riscaldo')}
+          />
+
+          <SezioneChiamataAutomatica
+            valori={valori}
+            setValori={setValori}
+            originali={originali}
+            onSalva={() => salvaChiavi(
+              ['chiamata_automatica_attiva', ...CHIAVI_CHIAMATA_AUTO.map(c => c.chiave)],
+              'chiamata automatica'
+            )}
           />
 
           <SezioneMessaggio
@@ -1370,6 +1390,64 @@ function SezionePreRiscaldo({ valori, setValori, originali, onSalva }) {
         className="btn-success w-full mt-4"
       >
         {cambiate.length === 0 ? 'Nessuna modifica' : `Salva pre-riscaldo (${cambiate.length})`}
+      </button>
+    </section>
+  )
+}
+
+// ------- Sezione CHIAMATA AUTOMATICA MANDATE (v7) -------
+
+function SezioneChiamataAutomatica({ valori, setValori, originali, onSalva }) {
+  const attiva = valori.chiamata_automatica_attiva === 'true'
+  const chiaviTimer = CHIAVI_CHIAMATA_AUTO.map(c => c.chiave)
+  const cambiate = ['chiamata_automatica_attiva', ...chiaviTimer]
+    .filter(k => String(valori[k] ?? '') !== String(originali[k] ?? ''))
+
+  return (
+    <section className="card border-2 border-gold/40">
+      <h3 className="font-bold text-lg mb-1">⏱️ Chiamata automatica mandate</h3>
+      <p className="text-xs opacity-70 mb-3">
+        Quando attiva, il sistema sblocca da solo la mandata successiva trascorsi i
+        minuti configurati dalla consegna della precedente. Il cameriere non deve
+        cliccare "Esci con MX" dalla lista (vede solo un countdown). Dal dettaglio
+        ordine puo' comunque forzare l'uscita anticipata.
+      </p>
+
+      <label className="flex items-center justify-between gap-2 rounded-xl border border-gold/40
+                        bg-pannello p-3 cursor-pointer">
+        <span className="font-semibold">Chiamata automatica attiva</span>
+        <input
+          type="checkbox"
+          checked={attiva}
+          onChange={e => setValori(s => ({
+            ...s,
+            chiamata_automatica_attiva: e.target.checked ? 'true' : 'false',
+          }))}
+        />
+      </label>
+
+      {attiva && (
+        <div className="space-y-2 mt-3">
+          {CHIAVI_CHIAMATA_AUTO.map(({ chiave, label }) => (
+            <label key={chiave} className="block">
+              <span className="text-sm opacity-80">{label}</span>
+              <input
+                type="number" inputMode="numeric" min="0"
+                value={valori[chiave] ?? ''}
+                onChange={e => setValori(v => ({ ...v, [chiave]: e.target.value }))}
+                className="input-base mt-1 tabular-nums"
+              />
+            </label>
+          ))}
+        </div>
+      )}
+
+      <button
+        onClick={onSalva}
+        disabled={cambiate.length === 0}
+        className="btn-success w-full mt-4"
+      >
+        {cambiate.length === 0 ? 'Nessuna modifica' : `Salva chiamata automatica (${cambiate.length})`}
       </button>
     </section>
   )
