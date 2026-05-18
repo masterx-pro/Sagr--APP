@@ -112,6 +112,9 @@ export default {
         btn: '48px',
       },
       screens: {
+        // Tablet 7-8" portrait — riduce font/badge/CTA nel KDS.
+        'sm-tablet':       { 'raw': '(max-width: 600px)' },
+        // Telefono in orizzontale — usato dalle pagine cameriere/cassa legacy.
         'mobile-landscape': { 'raw': '(orientation: landscape) and (max-height: 500px)' }
       },
     }

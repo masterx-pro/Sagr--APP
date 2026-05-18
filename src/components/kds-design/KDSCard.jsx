@@ -12,13 +12,15 @@ import RushButton from './RushButton.jsx'
  *     rush: bool,
  *     items: [{ nome, q, note?: [{icon,label,color}] }]
  *   }
- *   onAdvance(order) — tap sul CTA principale, sposta nella colonna successiva
- *   onRush(order)    — toggle RUSH
- *   flying           — 'out' | 'in' | null per animazione di transizione
+ *   onAdvance(order)
+ *   onRush(order)
+ *   flying  — 'out' | 'in' | null
+ *
+ * Card responsive: i max-[600px] riducono badge/font/CTA su tablet 7-8"
+ * portrait per evitare overflow ed UI gigante.
  */
 export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
   const elapsed = useElapsedSeconds(order.createdAt)
-
   const stateMeta = STATE_META[order.stato]
 
   const flyClass =
@@ -30,7 +32,7 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
     <article
       className={[
         'relative flex flex-col bg-surface border border-borderSoft rounded-card-lg shadow-md',
-        'overflow-hidden',
+        'overflow-hidden min-h-[140px]',
         stateMeta.cardExtra,
         order.rush ? 'kds-rush-glow' : '',
         flyClass,
@@ -64,50 +66,55 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
           50%      { box-shadow: 0 0 0 2px rgba(232,64,64,0.30), 0 0 12px rgba(232,64,64,0.20); }
         }
         .kds-rush-glow { animation: kds-rush-blink 1s ease-in-out infinite; }
-
-        @keyframes kds-pre-pulse {
-          0%, 100% { box-shadow: inset 4px 0 0 #F0A820, 0 0 0 0 rgba(240,168,32,0.55); }
-          50%      { box-shadow: inset 4px 0 0 #F0A820, 0 0 0 8px rgba(240,168,32,0); }
-        }
       `}</style>
 
       {/* RUSH ribbon */}
       {order.rush && (
         <div className="absolute top-0 right-0 z-10 pointer-events-none">
-          <div className="bg-danger text-bg font-extrabold text-[12px] uppercase tracking-[1.4px]
-                          px-3 py-1 rounded-bl-card-lg flex items-center gap-1 shadow-md">
-            <Flame size={14} strokeWidth={3} /> RUSH
+          <div className="bg-danger text-bg font-extrabold text-[11px] sm-tablet:text-[10px]
+                          uppercase tracking-[1.4px]
+                          px-2.5 py-0.5 rounded-bl-card-lg flex items-center gap-1 shadow-md">
+            <Flame size={12} strokeWidth={3} /> RUSH
           </div>
         </div>
       )}
 
       {/* HEADER */}
-      <header className="flex items-start justify-between gap-3 px-3 pt-3 pb-2.5">
-        <div className="flex items-start gap-3 min-w-0">
+      <header className="flex items-start justify-between gap-3 px-3 pt-3 pb-2.5 sm-tablet:px-2.5 sm-tablet:pt-2.5">
+        <div className="flex items-start gap-3 min-w-0 sm-tablet:gap-2">
           {/* Badge tavolo */}
           <div
-            className="shrink-0 flex flex-col items-center justify-center w-[52px] h-[52px] rounded-[14px]
+            className="shrink-0 flex flex-col items-center justify-center
+                       w-[52px] h-[52px] rounded-[14px]
+                       sm-tablet:w-[40px] sm-tablet:h-[40px] sm-tablet:rounded-[10px]
                        bg-wineDeep border border-wine/60 text-text shadow-md"
           >
-            <span className="text-[9px] font-extrabold tracking-[1.2px] text-gold leading-none">TAV</span>
-            <span className="font-mono font-extrabold text-[26px] leading-none tabular-nums">
+            <span className="text-[9px] sm-tablet:text-[8px] font-extrabold tracking-[1.2px]
+                             text-gold leading-none">TAV</span>
+            <span className="font-mono font-extrabold text-[26px] sm-tablet:text-[20px]
+                             leading-none tabular-nums">
               {order.tavolo}
             </span>
           </div>
+
           <div className="min-w-0">
             <div className="flex items-center gap-1.5 min-w-0">
-              <span className="font-extrabold text-text text-[18px] leading-tight truncate">
+              <span className="font-extrabold text-text text-[18px] sm-tablet:text-[16px]
+                               leading-tight truncate">
                 {order.cliente}
               </span>
               {order.mandataLabel && (
                 <span className="shrink-0 inline-flex items-center justify-center
-                                 px-1.5 h-[22px] rounded-badge bg-surfaceElev border border-border
-                                 font-mono font-extrabold text-[12px] text-gold tabular-nums">
+                                 px-1.5 h-[22px] sm-tablet:h-[20px] rounded-badge
+                                 bg-surfaceElev border border-border
+                                 font-mono font-extrabold text-[12px] sm-tablet:text-[11px]
+                                 text-gold tabular-nums">
                   {order.mandataLabel}
                 </span>
               )}
             </div>
-            <div className="flex items-center gap-1.5 mt-0.5 text-textSoft text-[13px] font-semibold">
+            <div className="flex items-center gap-1.5 mt-0.5 text-textSoft
+                            text-[13px] sm-tablet:text-[12px] font-semibold">
               <Users size={13} strokeWidth={2.5} />
               <span>{order.persone} pers.</span>
               {order.rush && <span className="text-danger font-extrabold ml-1">· URGENTE</span>}
@@ -118,24 +125,27 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
         <Timer seconds={elapsed} />
       </header>
 
-      {/* ITEMS */}
-      <div className="flex-1 px-3 py-1 overflow-hidden">
+      {/* ITEMS — height auto, contenuto cresce naturalmente */}
+      <div className="px-3 py-1 sm-tablet:px-2.5">
         <ul className="flex flex-col">
           {order.items.slice(0, 6).map((it, idx) => (
             <li
               key={idx}
               className={[
-                'flex items-start gap-3 py-2',
+                'flex items-start gap-3 py-2 sm-tablet:gap-2 sm-tablet:py-1.5',
                 idx > 0 ? 'border-t border-borderSoft' : '',
               ].join(' ')}
             >
-              <div className="shrink-0 w-9 h-9 rounded-badge bg-surfaceElev border border-border
+              <div className="shrink-0 w-9 h-9 sm-tablet:w-8 sm-tablet:h-8
+                              rounded-badge bg-surfaceElev border border-border
                               flex items-center justify-center
-                              font-extrabold text-[16px] text-text tabular-nums">
+                              font-extrabold text-[16px] sm-tablet:text-[14px]
+                              text-text tabular-nums">
                 {it.q}
               </div>
               <div className="min-w-0 flex-1">
-                <div className="text-text text-[20px] font-semibold leading-tight break-words">
+                <div className="text-text text-[20px] sm-tablet:text-[16px]
+                                font-semibold leading-tight break-words">
                   {it.nome}
                 </div>
                 {Array.isArray(it.note) && it.note.length > 0 && (
@@ -144,7 +154,7 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
                       <span
                         key={i}
                         className="inline-flex items-center gap-1 px-2 py-0.5 rounded-badge
-                                   text-[12px] font-bold border"
+                                   text-[12px] sm-tablet:text-[11px] font-bold border"
                         style={{
                           background: `${n.color}22`,
                           color: n.color,
@@ -168,8 +178,9 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
         </ul>
       </div>
 
-      {/* AZIONI */}
-      <footer className="px-3 pt-2 pb-3 flex items-stretch gap-2 border-t border-borderSoft bg-bg/30">
+      {/* AZIONI — sempre visibili, mai overflow */}
+      <footer className="mt-auto px-3 pt-2 pb-3 sm-tablet:px-2.5 sm-tablet:pb-2.5
+                         flex items-stretch gap-2 border-t border-borderSoft bg-bg/30">
         <RushButton
           active={order.rush}
           size="md"
@@ -187,18 +198,19 @@ function Timer({ seconds }) {
   const m = Math.floor(seconds / 60)
   const s = seconds % 60
   const tone =
-    seconds < 5 * 60  ? 'text-success'
+    seconds < 5 * 60    ? 'text-success'
     : seconds < 10 * 60 ? 'text-warning'
-    :                   'text-danger animate-pulseUrgent'
+    :                     'text-danger animate-pulseUrgent'
 
   return (
     <div className={[
-      'shrink-0 flex items-center gap-1.5 px-2 h-9 rounded-btn',
+      'shrink-0 flex items-center gap-1.5 px-2 h-9 sm-tablet:h-8 sm-tablet:px-1.5 rounded-btn',
       'bg-bg/50 border border-borderSoft',
       tone,
     ].join(' ')}>
-      <Clock size={16} strokeWidth={2.5} />
-      <span className="font-mono font-extrabold text-[22px] tabular-nums leading-none">
+      <Clock size={15} strokeWidth={2.5} />
+      <span className="font-mono font-extrabold text-[22px] sm-tablet:text-[18px]
+                       tabular-nums leading-none">
         {String(m).padStart(2, '0')}:{String(s).padStart(2, '0')}
       </span>
     </div>
@@ -212,11 +224,14 @@ function MainAction({ order, onAdvance }) {
 
   if (order.stato === 'in_finestra') {
     return (
-      <div className="flex-1 flex items-center justify-center gap-2 min-h-[56px]
+      <div className="flex-1 flex items-center justify-center gap-2
+                      min-h-[64px] sm-tablet:min-h-[52px]
                       rounded-btn border-2 border-dashed border-success/50 bg-successSoft
-                      text-success font-extrabold text-[16px] uppercase tracking-[1.2px]">
+                      text-success font-extrabold
+                      text-[16px] sm-tablet:text-[13px]
+                      uppercase tracking-[1.2px] text-center px-2">
         <Hourglass size={18} strokeWidth={2.5} />
-        Attende cameriere
+        <span>Attende cameriere</span>
       </div>
     )
   }
@@ -225,14 +240,16 @@ function MainAction({ order, onAdvance }) {
     <button
       onClick={() => onAdvance?.(order)}
       className={[
-        'flex-1 flex items-center justify-center gap-2 min-h-[56px] rounded-btn',
-        'font-extrabold text-[18px] uppercase tracking-[1px]',
+        'flex-1 flex items-center justify-center gap-2',
+        'min-h-[64px] sm-tablet:min-h-[52px]',
+        'rounded-btn font-extrabold',
+        'text-[18px] sm-tablet:text-[14px] uppercase tracking-[1px]',
         'shadow-cta active:scale-[0.98] transition-transform',
         meta.ctaCls,
       ].join(' ')}
     >
       <meta.ctaIcon size={20} strokeWidth={2.8} />
-      <span>{meta.ctaLabel}</span>
+      <span className="text-center">{meta.ctaLabel}</span>
       <ChevronRight size={20} strokeWidth={3} />
     </button>
   )

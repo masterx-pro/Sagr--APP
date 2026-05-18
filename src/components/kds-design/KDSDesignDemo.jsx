@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ChefHat, Beer, Zap, Eye } from 'lucide-react'
+import { ChefHat, Beer, Zap, Eye, Plus } from 'lucide-react'
 import KDSLayout from './KDSLayout.jsx'
 import NoteModal, { DEFAULT_NOTES } from './NoteModal.jsx'
 
@@ -22,14 +22,58 @@ export default function KDSDesignDemo() {
   const [noteOpen, setNoteOpen] = useState(false)
   const [appliedNotes, setAppliedNotes] = useState([])
 
-  // Reset del demo
+  // Stress test e reset (uncontrolled mode: bump della key forza remount)
+  const [extraOrders, setExtraOrders] = useState([])
   const [resetKey, setResetKey] = useState(0)
+
+  const addStressBatch = () => {
+    const seed = Date.now()
+    const piattiPool = role === 'cucina'
+      ? ['Vincisgrassi al ragù','Tagliatelle al cinghiale','Passatelli in brodo',
+         'Olive ascolane','Coniglio in porchetta','Scottadito di agnello',
+         'Bruschette al pomodoro','Crescia sfogliata']
+      : ["Verdicchio Castelli di Jesi","Lacrima di Morro d'Alba",'Acqua naturale 1L',
+         'Acqua frizzante 1L','Caffè','Mistrà','Vino sfuso rosso 1L','Birra Forst 0.4L']
+    const clientiPool = ['Anna','Marco','Sara','Luca','Elena','Paolo','Chiara','Giulia','Bruno','Maria']
+    const stati = ['sbloccata','sbloccata','sbloccata','sbloccata','sbloccata','pre_riscaldo','sbloccata','sbloccata','sbloccata','sbloccata']
+    const nuovi = Array.from({ length: 10 }, (_, i) => {
+      const items = []
+      const nItems = 1 + (i % 4)   // 1..4 piatti
+      for (let k = 0; k < nItems; k++) {
+        items.push({
+          nome: piattiPool[(i + k) % piattiPool.length],
+          q: 1 + ((i + k) % 4),
+        })
+      }
+      return {
+        id: `stress-${seed}-${i}`,
+        tavolo: 50 + i,
+        cliente: clientiPool[i % clientiPool.length],
+        persone: 2 + (i % 6),
+        createdAt: seed - i * 45_000,
+        stato: stati[i],
+        rush: i === 2,
+        items,
+      }
+    })
+    setExtraOrders(curr => [...curr, ...nuovi])
+    setResetKey(k => k + 1)
+  }
+
+  const resetAll = () => {
+    setExtraOrders([])
+    setResetKey(k => k + 1)
+  }
+
+  const baseOrders = role === 'cucina' ? MOCK_CUCINA : MOCK_BAR
+  const allOrders  = [...baseOrders, ...extraOrders]
 
   return (
     <div className="min-h-screen bg-bg text-text font-ui">
       {/* Toolbar fissa in alto (solo demo, non parte del KDS) */}
       <div className="fixed top-2 left-2 z-50 flex items-center gap-2 px-3 py-2
-                      bg-bg/85 backdrop-blur border border-borderSoft rounded-card-lg shadow-lg">
+                      bg-bg/85 backdrop-blur border border-borderSoft rounded-card-lg shadow-lg
+                      flex-wrap max-w-[calc(100vw-1rem)]">
         <span className="text-[10px] font-extrabold uppercase tracking-[1.6px] text-gold">
           Demo · KDS v2
         </span>
@@ -38,16 +82,22 @@ export default function KDSDesignDemo() {
         <DemoBtn active={role === 'bar'}    onClick={() => setRole('bar')}    icon={Beer}>Bar</DemoBtn>
         <div className="w-px h-5 bg-borderSoft" />
         <DemoBtn onClick={() => setNoteOpen(true)} icon={Eye}>Note modal</DemoBtn>
-        <DemoBtn onClick={() => setResetKey(k => k + 1)} icon={Zap}>Reset</DemoBtn>
+        <DemoBtn onClick={addStressBatch}     icon={Plus}>+10 stress</DemoBtn>
+        <DemoBtn onClick={resetAll}           icon={Zap}>Reset</DemoBtn>
+        {extraOrders.length > 0 && (
+          <span className="text-[10px] font-mono text-textSoft tabular-nums">
+            (+{extraOrders.length} stress)
+          </span>
+        )}
       </div>
 
-      {/* viewport 1024×768 simulato sul desktop; in tablet fullscreen */}
-      <div className="w-full" style={{ minHeight: '768px' }}>
+      {/* viewport tablet — fullscreen */}
+      <div className="w-full" style={{ minHeight: '100vh' }}>
         <KDSLayout
           key={`${role}-${resetKey}`}
           role={role}
           servizio="cena"
-          initialOrders={role === 'cucina' ? MOCK_CUCINA : MOCK_BAR}
+          initialOrders={allOrders}
           onLogout={() => alert('Logout (demo)')}
         />
       </div>

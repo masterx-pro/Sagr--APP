@@ -86,8 +86,14 @@ export default function KDSColumn({
         </span>
       </header>
 
-      {/* Lista card */}
-      <div className="flex-1 min-h-0 overflow-y-auto p-2.5 flex flex-col gap-2.5">
+      {/* Lista card — scroll interno indipendente per colonna.
+          overscroll-contain evita che lo scroll "rimbalzi" sul body.
+          WebkitOverflowScrolling abilita momentum scroll su iOS/Android. */}
+      <div
+        className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-2.5
+                   flex flex-col gap-2.5"
+        style={{ WebkitOverflowScrolling: 'touch' }}
+      >
         {sortedOrders.length === 0 ? (
           <EmptyState tone={tone} id={id} />
         ) : (

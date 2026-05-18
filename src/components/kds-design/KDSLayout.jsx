@@ -1,4 +1,4 @@
-import { useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { LogOut, Columns3, LayoutGrid, ChefHat, Beer, Moon, Sun } from 'lucide-react'
 import KDSColumn from './KDSColumn.jsx'
 import KDSAggregato from './KDSAggregato.jsx'
@@ -6,22 +6,26 @@ import KDSAggregato from './KDSAggregato.jsx'
 /**
  * KDSLayout — layout principale del Kitchen Display System.
  *
- * Due modalità:
+ * Due modalità dati:
  *
  *   UNCONTROLLED (demo): passa initialOrders. Lo stato (incluso advance e
  *   toggleRush) e' gestito internamente.
  *
  *   CONTROLLED (DB reale): passa orders + onAdvance + onRush. Il chiamante
  *   gestisce le mutazioni (es. Supabase) e ri-passa la lista aggiornata via
- *   prop. L'animazione "fly" resta locale: trigger immediato all'uscita,
- *   trigger al rientro quando l'ordine ricompare nella colonna successiva
- *   (o quando viene rimosso e poi ricreato dalla pipeline di refetch).
+ *   prop. L'animazione "fly" resta locale.
+ *
+ * Due modalità layout (auto-detected via window dimensions):
+ *
+ *   LANDSCAPE (width >= height): 3 colonne affiancate scrollabili.
+ *   PORTRAIT  (width <  height): una colonna alla volta, scelta con
+ *     un tab-strip in alto con badge count.
  *
  * Props comuni:
  *   role: 'cucina' | 'bar'
  *   servizio: 'pranzo' | 'cena'
- *   subtitle?: string                 — testo accessorio (es. "Marco · 8 attivi")
- *   topBar?: ReactNode                — slot per badge extra nel header
+ *   subtitle?: string
+ *   topBar?: ReactNode
  *   onLogout?()
  *
  * Le 3 colonne mappano gli stati così:
@@ -43,29 +47,28 @@ export default function KDSLayout({
   initialOrders,
 }) {
   const isControlled = ordersControlled !== undefined
-
   const [ordersInternal, setOrdersInternal] = useState(() => initialOrders ?? [])
   const orders = isControlled ? ordersControlled : ordersInternal
 
-  const [view, setView] = useState('colonne')   // 'colonne' | 'aggregato'
+  const [view, setView] = useState('colonne')           // 'colonne' | 'aggregato'
+  const [portraitCol, setPortraitCol] = useState('da-fare')
+
+  const portrait = useIsPortrait()
 
   // ── transizioni card → colonna successiva ──
-  const [flyingOut, setFlyingOut]   = useState(new Set())
-  const [flyingIn, setFlyingIn]     = useState(new Set())
-  const [flashCol, setFlashCol]     = useState(null)
+  const [flyingOut, setFlyingOut] = useState(new Set())
+  const [flyingIn, setFlyingIn]   = useState(new Set())
+  const [flashCol, setFlashCol]   = useState(null)
   const timeoutsRef = useRef([])
 
   const advance = useCallback((order) => {
     const nextStato = NEXT_STATE[order.stato]
     if (!nextStato) return
 
-    // 1) fly-out immediato
     setFlyingOut(prev => new Set(prev).add(order.id))
 
-    // 2) dopo 280ms: aggiorna lo stato e prepara il fly-in
     const t1 = setTimeout(() => {
       if (isControlled) {
-        // Delega al parent. La nuova lista arriverà via prop (realtime/refetch).
         try { onAdvance?.(order) } catch (e) { console.warn('onAdvance throw:', e) }
       } else {
         setOrdersInternal(curr => curr.map(o =>
@@ -95,9 +98,9 @@ export default function KDSLayout({
     ))
   }, [isControlled, onRush])
 
-  // Filtra per colonna
-  const daFare    = orders.filter(o => o.stato === 'sbloccata' || o.stato === 'pre_riscaldo')
-  const inCorso   = orders.filter(o => o.stato === 'in_preparazione')
+  // Buckets per colonna
+  const daFare     = orders.filter(o => o.stato === 'sbloccata' || o.stato === 'pre_riscaldo')
+  const inCorso    = orders.filter(o => o.stato === 'in_preparazione')
   const inFinestra = orders.filter(o => o.stato === 'in_finestra')
 
   const flyingIds = new Set([...flyingOut, ...flyingIn])
@@ -105,32 +108,55 @@ export default function KDSLayout({
 
   const roleMeta = ROLE_META[role]
 
+  const COLUMNS = [
+    { id: 'da-fare',     title: 'Da fare',     icon: '🔴', tone: 'danger',  orders: daFare },
+    { id: 'in-corso',    title: 'In corso',    icon: '🔄', tone: 'warning', orders: inCorso },
+    { id: 'in-finestra', title: 'In finestra', icon: '🪟', tone: 'success', orders: inFinestra },
+  ]
+
+  const renderColumn = (col) => (
+    <KDSColumn
+      key={col.id}
+      id={col.id}
+      title={col.title}
+      icon={col.icon}
+      tone={col.tone}
+      orders={col.orders}
+      flashing={flashCol === col.id}
+      flyingIds={flyingIds}
+      flyingDirection={flyingDirection}
+      onAdvance={advance}
+      onRush={toggleRush}
+    />
+  )
+
   return (
     <div className="h-screen w-screen flex flex-col bg-bg text-text font-ui overflow-hidden">
       {/* HEADER pagina */}
       <header
-        className="shrink-0 flex items-center gap-3 px-4 h-[70px] border-b border-borderSoft"
+        className="shrink-0 flex items-center gap-2 px-3 sm:px-4 min-h-[64px] sm:h-[70px] py-2
+                   border-b border-borderSoft flex-wrap sm:flex-nowrap"
         style={{
           background: `linear-gradient(135deg, ${roleMeta.from} 0%, ${roleMeta.to} 100%)`,
         }}
       >
-        <div className="flex items-center gap-3 min-w-0">
-          <div className="w-11 h-11 rounded-card bg-bg/30 border border-white/10
-                          flex items-center justify-center text-gold">
-            <roleMeta.icon size={26} strokeWidth={2.2} />
+        <div className="flex items-center gap-3 min-w-0 shrink">
+          <div className="w-10 h-10 sm:w-11 sm:h-11 rounded-card bg-bg/30 border border-white/10
+                          flex items-center justify-center text-gold shrink-0">
+            <roleMeta.icon size={24} strokeWidth={2.2} />
           </div>
           <div className="min-w-0">
-            <h1 className="font-display text-[22px] leading-none text-text">
+            <h1 className="font-display text-[18px] sm:text-[22px] leading-none text-text">
               {roleMeta.title}
             </h1>
-            <p className="text-[12px] font-bold text-textSoft uppercase tracking-[1.2px] mt-1 truncate">
+            <p className="text-[11px] sm:text-[12px] font-bold text-textSoft uppercase
+                          tracking-[1.2px] mt-1 truncate">
               {subtitle ?? `Live · ${orders.length} ordin${orders.length === 1 ? 'e' : 'i'} attiv${orders.length === 1 ? 'o' : 'i'}`}
             </p>
           </div>
         </div>
 
-        {/* Tab Per colonna / Aggregato */}
-        <div className="ml-auto flex items-center gap-2">
+        <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
           {topBar}
           <div className="flex p-1 rounded-card bg-bg/40 border border-white/10">
             <TabBtn
@@ -162,52 +188,43 @@ export default function KDSLayout({
                        active:scale-95 transition-transform"
           >
             <LogOut size={16} strokeWidth={2.4} />
-            Esci
+            <span className="hidden sm:inline">Esci</span>
           </button>
         </div>
       </header>
 
-      {/* MAIN — 3 colonne o aggregato */}
-      <main className="flex-1 min-h-0 p-3">
-        {view === 'colonne' ? (
-          <div className="h-full grid grid-cols-3 gap-3">
-            <KDSColumn
-              id="da-fare"
-              title="Da fare"
-              icon="🔴"
-              tone="danger"
-              orders={daFare}
-              flashing={flashCol === 'da-fare'}
-              flyingIds={flyingIds}
-              flyingDirection={flyingDirection}
-              onAdvance={advance}
-              onRush={toggleRush}
-            />
-            <KDSColumn
-              id="in-corso"
-              title="In corso"
-              icon="🔄"
-              tone="warning"
-              orders={inCorso}
-              flashing={flashCol === 'in-corso'}
-              flyingIds={flyingIds}
-              flyingDirection={flyingDirection}
-              onAdvance={advance}
-              onRush={toggleRush}
-            />
-            <KDSColumn
-              id="in-finestra"
-              title="In finestra"
-              icon="🪟"
-              tone="success"
-              orders={inFinestra}
-              flashing={flashCol === 'in-finestra'}
-              flyingIds={flyingIds}
-              flyingDirection={flyingDirection}
-              onAdvance={advance}
-              onRush={toggleRush}
-            />
+      {/* Tab strip per colonne (solo portrait) */}
+      {portrait && view === 'colonne' && (
+        <div className="shrink-0 px-2 pt-2 pb-1 bg-bg/40 border-b border-borderSoft">
+          <div className="grid grid-cols-3 gap-1.5 p-1 rounded-card bg-surface border border-borderSoft">
+            {COLUMNS.map(col => (
+              <ColumnTab
+                key={col.id}
+                tone={col.tone}
+                icon={col.icon}
+                title={col.title}
+                count={col.orders.length}
+                active={portraitCol === col.id}
+                flashing={flashCol === col.id && portraitCol !== col.id}
+                onClick={() => setPortraitCol(col.id)}
+              />
+            ))}
           </div>
+        </div>
+      )}
+
+      {/* MAIN */}
+      <main className="flex-1 min-h-0 p-2 sm:p-3">
+        {view === 'colonne' ? (
+          portrait ? (
+            <div className="h-full">
+              {renderColumn(COLUMNS.find(c => c.id === portraitCol) ?? COLUMNS[0])}
+            </div>
+          ) : (
+            <div className="h-full grid grid-cols-3 gap-3">
+              {COLUMNS.map(renderColumn)}
+            </div>
+          )
         ) : (
           <KDSAggregato orders={orders} role={role} onAdvance={advance} />
         )}
@@ -216,12 +233,32 @@ export default function KDSLayout({
   )
 }
 
+/* ───────── hooks/components ausiliari ───────── */
+
+function useIsPortrait() {
+  const [portrait, setPortrait] = useState(() => {
+    if (typeof window === 'undefined') return false
+    return window.innerHeight > window.innerWidth
+  })
+  useEffect(() => {
+    const update = () => setPortrait(window.innerHeight > window.innerWidth)
+    update()
+    window.addEventListener('resize', update)
+    window.addEventListener('orientationchange', update)
+    return () => {
+      window.removeEventListener('resize', update)
+      window.removeEventListener('orientationchange', update)
+    }
+  }, [])
+  return portrait
+}
+
 function TabBtn({ active, onClick, icon: Icon, label }) {
   return (
     <button
       onClick={onClick}
       className={[
-        'inline-flex items-center gap-1.5 px-3 h-9 rounded-btn font-extrabold text-[13px]',
+        'inline-flex items-center gap-1.5 px-2.5 sm:px-3 h-9 rounded-btn font-extrabold text-[12px] sm:text-[13px]',
         'uppercase tracking-[1px] transition-all active:scale-95',
         active
           ? 'bg-gold text-bg shadow-cta'
@@ -229,7 +266,36 @@ function TabBtn({ active, onClick, icon: Icon, label }) {
       ].join(' ')}
     >
       <Icon size={15} strokeWidth={2.6} />
-      {label}
+      <span className="hidden xs:inline">{label}</span>
+      <span className="xs:hidden">{label.slice(0, 4)}</span>
+    </button>
+  )
+}
+
+function ColumnTab({ tone, icon, title, count, active, flashing, onClick }) {
+  const t = TAB_TONES[tone]
+  return (
+    <button
+      onClick={onClick}
+      className={[
+        'flex items-center justify-center gap-1.5 min-h-[48px] px-2 rounded-btn',
+        'font-extrabold text-[12px] uppercase tracking-[1.2px]',
+        'transition-all active:scale-95',
+        active ? `${t.activeBg} ${t.activeText}` : 'bg-transparent text-textSoft',
+        flashing ? 'animate-blink' : '',
+      ].join(' ')}
+    >
+      <span className="text-[16px] leading-none">{icon}</span>
+      <span className="truncate">{title}</span>
+      <span
+        className={[
+          'inline-flex items-center justify-center min-w-[24px] h-6 px-1.5 rounded-full',
+          'font-mono font-extrabold text-[12px] tabular-nums',
+          active ? t.badgeActive : t.badgeIdle,
+        ].join(' ')}
+      >
+        {count}
+      </span>
     </button>
   )
 }
@@ -249,16 +315,12 @@ const STATE_TO_COL = {
 }
 
 const ROLE_META = {
-  cucina: {
-    title: 'Cucina',
-    icon:  ChefHat,
-    from:  '#8B2120',
-    to:    '#3E0A0A',
-  },
-  bar: {
-    title: 'Bar',
-    icon:  Beer,
-    from:  '#B8541F',
-    to:    '#5C2410',
-  },
+  cucina: { title: 'Cucina', icon: ChefHat, from: '#8B2120', to: '#3E0A0A' },
+  bar:    { title: 'Bar',    icon: Beer,    from: '#B8541F', to: '#5C2410' },
+}
+
+const TAB_TONES = {
+  danger:  { activeBg: 'bg-dangerSoft',  activeText: 'text-danger',  badgeActive: 'bg-danger text-bg',  badgeIdle: 'bg-surfaceElev text-textSoft' },
+  warning: { activeBg: 'bg-warningSoft', activeText: 'text-warning', badgeActive: 'bg-warning text-bg', badgeIdle: 'bg-surfaceElev text-textSoft' },
+  success: { activeBg: 'bg-successSoft', activeText: 'text-success', badgeActive: 'bg-success text-bg', badgeIdle: 'bg-surfaceElev text-textSoft' },
 }
