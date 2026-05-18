@@ -32,7 +32,10 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
     <article
       className={[
         'relative flex flex-col bg-surface border border-borderSoft rounded-card-lg shadow-md',
-        'overflow-hidden min-h-[140px]',
+        // shrink-0: dentro al flex-col della colonna, la card NON deve mai
+        // essere compressa sotto la sua altezza naturale → la colonna
+        // scrolla, ma la card mostra sempre header + items + footer.
+        'shrink-0 min-h-[220px] sm-tablet:min-h-[200px]',
         stateMeta.cardExtra,
         order.rush ? 'kds-rush-glow' : '',
         flyClass,
@@ -40,6 +43,7 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
       style={{
         borderLeftWidth: '4px',
         borderLeftColor: `var(--kds-accent-${order.stato})`,
+        borderRadius: '18px',
         transition: 'transform 300ms cubic-bezier(.2,.7,.2,1), opacity 300ms cubic-bezier(.2,.7,.2,1)',
       }}
     >
@@ -68,12 +72,17 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
         .kds-rush-glow { animation: kds-rush-blink 1s ease-in-out infinite; }
       `}</style>
 
-      {/* RUSH ribbon */}
+      {/* RUSH ribbon — non clippato (overflow è visible).
+          rounded-tr-[18px] segue il radius della card per non sporgere. */}
       {order.rush && (
         <div className="absolute top-0 right-0 z-10 pointer-events-none">
           <div className="bg-danger text-bg font-extrabold text-[11px] sm-tablet:text-[10px]
                           uppercase tracking-[1.4px]
-                          px-2.5 py-0.5 rounded-bl-card-lg flex items-center gap-1 shadow-md">
+                          px-2.5 py-0.5 flex items-center gap-1 shadow-md"
+               style={{
+                 borderTopRightRadius: '14px',
+                 borderBottomLeftRadius: '18px',
+               }}>
             <Flame size={12} strokeWidth={3} /> RUSH
           </div>
         </div>
@@ -178,8 +187,11 @@ export default function KDSCard({ order, onAdvance, onRush, flying = null }) {
         </ul>
       </div>
 
-      {/* AZIONI — sempre visibili, mai overflow */}
-      <footer className="mt-auto px-3 pt-2 pb-3 sm-tablet:px-2.5 sm-tablet:pb-2.5
+      {/* AZIONI — sempre visibili, mai compresse.
+          mt-auto: in cards corte spinge il footer al fondo (header/items
+          in alto, vuoto in mezzo, footer in basso).
+          shrink-0: garantisce che il footer non venga compresso. */}
+      <footer className="mt-auto shrink-0 px-3 pt-2 pb-3 sm-tablet:px-2.5 sm-tablet:pb-2.5
                          flex items-stretch gap-2 border-t border-borderSoft bg-bg/30">
         <RushButton
           active={order.rush}
