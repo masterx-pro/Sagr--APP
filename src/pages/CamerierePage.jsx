@@ -601,19 +601,41 @@ export default function CamerierePage({ user, onLogout }) {
 function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca, onConfermaBancomat, onConsegnata, chiamataAutoAttiva, autoSbloccoMap }) {
   const [filtro, setFiltro] = useState('tutti') // 'tutti' | 'pronti' | 'attivi' | 'daPagare'
 
-  const pronti    = []
-  const attivi    = []
-  const daPagare  = []   // attesa_cassa (contanti) + attesa_bancomat (POS)
-  const stornati  = []
+  // Priorità tavoli (cima → fondo lista):
+  //   1. attesa_bancomat  💳 da confermare POS — SEMPRE in cima
+  //   2. in_finestra      🟢 pronti da portare
+  //   3. sbloccata        🔴 urgenti
+  //   4. in_preparazione  🔄 in corso
+  //   5. in_attesa/pre_riscaldo  ⬜ ancora bloccati
+  //   6. attesa_cassa     💵 da incassare
+  //   7. storico / completati / stornati
+  const pronti   = []
+  const urgenti  = []
+  const inCorso  = []
+  const inAttesa = []
+  const bancomat = []
+  const cassa    = []
+  const storico  = []
 
   for (const o of orders) {
-    if (o.stato === 'attesa_cassa')    { daPagare.push(o); continue }
-    if (o.stato === 'attesa_bancomat') { daPagare.push(o); continue }
-    if (o.stato === 'stornato')        { stornati.push(o); continue }
-    const stato = statoCameriereOrdine(o.order_items || [])
-    if (stato === 'pronto') pronti.push(o)
-    else attivi.push(o)
+    if (o.stato === 'attesa_bancomat') { bancomat.push(o); continue }
+    if (o.stato === 'attesa_cassa')    { cassa.push(o);    continue }
+    if (o.stato === 'stornato' || o.stato === 'completato') { storico.push(o); continue }
+    // confermato (e fallback): smista per stato items
+    const items = o.order_items || []
+    if      (items.some(i => i.mandata_stato === 'in_finestra'))     pronti.push(o)
+    else if (items.some(i => i.mandata_stato === 'sbloccata'))       urgenti.push(o)
+    else if (items.some(i => i.mandata_stato === 'in_preparazione')) inCorso.push(o)
+    else if (items.some(i =>
+              i.mandata_stato === 'in_attesa' || i.mandata_stato === 'pre_riscaldo'))
+                                                                     inAttesa.push(o)
+    else                                                             storico.push(o)
   }
+
+  // attivi = urgenti + in corso + in attesa (per i contatori UI)
+  const attivi = [...urgenti, ...inCorso, ...inAttesa]
+  // daPagare = bancomat + cassa (bancomat sempre prima, anche dentro al filtro)
+  const daPagare = [...bancomat, ...cassa]
 
   const totali = {
     tutti: orders.length,
@@ -624,8 +646,8 @@ function ListaTavoli({ orders, onNew, onSelect, onRiordino, onSblocca, onConferm
 
   const tavoliPronti = pronti.map(o => o.numero_tavolo).slice(0, 6)
 
-  // Lista ordinata per priorità: pronto → attivo → da pagare → stornato
-  const sorted = [...pronti, ...attivi, ...daPagare, ...stornati]
+  // Lista ordinata: bancomat → pronti → urgenti → in corso → in attesa → cassa → storico
+  const sorted = [...bancomat, ...pronti, ...urgenti, ...inCorso, ...inAttesa, ...cassa, ...storico]
   const filtered = (() => {
     if (filtro === 'pronti')   return pronti
     if (filtro === 'attivi')   return attivi
